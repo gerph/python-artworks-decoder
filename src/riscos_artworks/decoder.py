@@ -286,8 +286,13 @@ class _Decoder:
             raise InvalidPointerError(f"records follow {name} record", offset)
 
     def _body(self, r: _Reader, code: int, last: bool) -> tuple[type[m.Record], dict[str, object]]:
-        if code in (0x00, 0x22, 0x42):
-            return m.EmptyRecord, {}
+        if code == 0x00:
+            return m.Record00Record, {}
+        if code == 0x22:
+            self._require_last(last, "record 22", r.position)
+            return m.Record22Record, {}
+        if code == 0x42:
+            return m.DistortionSubgroupRecord, {}
         if code == 0x01:
             return m.TextRecord, {"unknown_values": tuple(r.u32() for _ in range(6)),
                                   "rectangle": _polyline(r, 4)}
@@ -334,10 +339,6 @@ class _Decoder:
                 body["gradient_line"] = _polyline(r, 2)
                 body["start_colour"] = m.ColourIndex(r.u32())
                 body["end_colour"] = m.ColourIndex(r.u32())
-            else:
-                # The value remains inspectable; a bounded record can retain its body.
-                if r.limit == len(self.data):
-                    raise UnsupportedValueError("unknown fill type cannot be sized", r.position - 8)
             return m.FillColourRecord, body
         if code == 0x27:
             self._require_last(last, "join style", r.position)
@@ -378,12 +379,12 @@ class _Decoder:
             self._require_last(last, "font size", r.position)
             return m.FontSizeRecord, {"x_size": r.u32(), "y_size": r.u32()}
         if code == 0x31:
-            return m.UnknownValuesRecord, {"values": tuple(r.u32() for _ in range(4))}
+            return m.Record31Record, {"values": tuple(r.u32() for _ in range(4))}
         if code == 0x32:
             self._require_last(last, "record 32", r.position)
-            return m.UnknownValuesRecord, {"values": (r.u32(),)}
+            return m.Record32Record, {"values": (r.u32(),)}
         if code == 0x33:
-            return m.UnknownValuesRecord, {"values": tuple(r.i32() for _ in range(6))}
+            return m.Record33Record, {"values": tuple(r.i32() for _ in range(6))}
         if code == 0x34:
             return m.EllipseRecord, {"triangle": _polyline(r, 3), "path": _path(r)}
         if code == 0x35:
@@ -488,6 +489,9 @@ def decode_file(handle: object) -> m.ArtWorks:
     for method in ("tell", "seek", "read"):
         if not callable(getattr(handle, method, None)):
             raise TypeError("handle must be a seekable binary file")
+    seekable = getattr(handle, "seekable", None)
+    if callable(seekable) and not seekable():
+        raise TypeError("handle must be a seekable binary file")
     original = handle.tell()  # type: ignore[attr-defined]
     try:
         handle.seek(0, SEEK_END)  # type: ignore[attr-defined]

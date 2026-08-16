@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, Iterator
+from typing import Iterator, TypeVar
 
-if TYPE_CHECKING:
-    from typing import TypeVar
-
-    _RecordT = TypeVar("_RecordT", bound="Record")
+_RecordT = TypeVar("_RecordT", bound="Record")
 
 
 __all__ = [
     "ArtWorks", "ArtWorksHeader", "BezierElement", "BlendGroupRecord",
     "BlendOptionsRecord", "BlendPathRecord", "BoundingBox", "CapStyle",
-    "CharacterRecord", "CloseElement", "ColourIndex", "DashPatternRecord",
+    "CharacterRecord", "CloseElement", "ColourIndex", "ColourModel",
+    "DashPatternRecord",
     "DecodedString", "DistortionGroupRecord", "EllipseRecord", "EmptyRecord",
     "EndCapRecord", "EndElement", "EndMarkerRecord", "FileInfoRecord",
     "FillColourRecord", "FillType", "FontNameRecord", "FontSizeRecord",
@@ -23,12 +21,13 @@ __all__ = [
     "LineCapRecord", "LineElement", "MarkerRecord", "MarkerStyle",
     "MoveElement", "Palette", "PaletteEntry", "Path", "PathElement",
     "PathRecord", "PerspectiveGroupRecord", "Point", "Record", "RecordList",
-    "RecordType", "RectangleRecord", "RelativePointer",
+    "Record00Record", "Record22Record", "Record31Record", "Record32Record",
+    "Record33Record", "RecordType", "RectangleRecord", "RelativePointer",
     "RoundedRectangleRecord", "SaveLocationRecord", "SourceSpan",
     "SpriteRecord", "StartCapRecord", "StartMarkerRecord", "StrokeColourRecord",
     "StrokeWidthRecord", "TextRecord", "Unknown2ERecord", "UnknownPathElement",
-    "UnknownRecord", "UnknownValuesRecord", "WindingRule", "WindingRuleRecord",
-    "WorkAreaRecord", "WorkAreaSection",
+    "UnknownRecord", "WindingRule", "WindingRuleRecord", "WorkAreaRecord",
+    "WorkAreaSection", "DistortionSubgroupRecord", "ArtWorksSummary",
 ]
 
 
@@ -75,6 +74,13 @@ class FillType(IntEnum):
     FLAT = 0
     LINEAR = 1
     RADIAL = 2
+
+
+class ColourModel(IntEnum):
+    RGB = 0
+    CMYK = 1
+    HSV = 2
+    NON_INTERPOLATING_RGB = 3
 
 
 class JoinStyle(IntEnum):
@@ -243,6 +249,14 @@ class PaletteEntry:
         return ((self.colour >> 16) & 0xFF, (self.colour >> 8) & 0xFF,
                 self.colour & 0xFF)
 
+    @property
+    def colour_model_value(self) -> int:
+        return self.flags & 0x3
+
+    @property
+    def colour_model(self) -> ColourModel:
+        return ColourModel(self.colour_model_value)
+
 
 @dataclass(frozen=True, slots=True)
 class Palette:
@@ -327,6 +341,21 @@ class UnknownRecord(Record):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EmptyRecord(Record):
+    pass
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Record00Record(EmptyRecord):
+    pass
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Record22Record(EmptyRecord):
+    pass
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DistortionSubgroupRecord(EmptyRecord):
     pass
 
 
@@ -480,7 +509,17 @@ class FontSizeRecord(Record):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class UnknownValuesRecord(Record):
+class Record31Record(Record):
+    values: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Record32Record(Record):
+    values: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Record33Record(Record):
     values: tuple[int, ...]
 
 
@@ -573,6 +612,16 @@ class RecordList:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtWorksSummary:
+    source_length: int
+    top_level_lists: int
+    records: int
+    type_counts: tuple[tuple[int, int], ...]
+    unsupported_records: int
+    palette_entries: int
+
+
+@dataclass(frozen=True, slots=True)
 class ArtWorks:
     header: ArtWorksHeader
     record_lists: tuple[RecordList, ...]
@@ -605,3 +654,25 @@ class ArtWorks:
         if value >= 0x01000000:
             return value
         return None if self.palette is None else self.palette.resolve(value)
+
+    def palette_entry(self, index: int) -> PaletteEntry | None:
+        if self.palette is None or index < 0 or index >= len(self.palette.entries):
+            return None
+        return self.palette.entries[index]
+
+    def structural_summary(self) -> ArtWorksSummary:
+        counts: dict[int, int] = {}
+        total = 0
+        unsupported = 0
+        for record in self.walk():
+            total += 1
+            counts[record.type_code] = counts.get(record.type_code, 0) + 1
+            unsupported += isinstance(record, UnknownRecord)
+        return ArtWorksSummary(
+            self.source_length,
+            len(self.record_lists),
+            total,
+            tuple(sorted(counts.items())),
+            unsupported,
+            0 if self.palette is None else len(self.palette.entries),
+        )
