@@ -71,6 +71,16 @@ python3 -m unittest discover -s tests
 python3 -m compileall -q src tests
 ```
 
+GitHub Actions tests the installed package on Python 3.11 through 3.14. Once
+those tests pass, every workflow run builds and uploads a source distribution
+and wheel as the `python-distributions` workflow artifact.
+
+Pushing a tag matching `v*` also creates a GitHub release containing those same
+tested distributions. The tag must be `v` followed by the exact version in
+`pyproject.toml`; for example, package version `0.2.0` must be tagged `v0.2.0`.
+Rerunning a tag workflow replaces the release assets without creating a second
+release.
+
 An optional private-corpus test is enabled by pointing `ARTWORKS_EXAMPLES` at a
 directory of ArtWorks files. No sample documents or JavaScript reference files
 are included in the distribution.

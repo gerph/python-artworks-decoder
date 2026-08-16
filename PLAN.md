@@ -63,3 +63,11 @@ are compatibility inputs only and must never be committed.
       records, hashes, and detailed decode failures.
 - [x] Test successful, non-ArtWorks, failed, resumed, and export-only scans.
 - [x] Audit all 1,414 files under `/cd/ARTWORKS` and verify generated reports.
+
+## Continuous integration and releases
+
+- [x] Test the installed package on Python 3.11, 3.12, 3.13, and 3.14.
+- [x] Build and validate source and wheel distributions after tests pass.
+- [x] Upload distributions as downloadable artifacts on every workflow run.
+- [x] Require `v*` release tags to match the package version exactly.
+- [x] Create or update GitHub releases with the tested distribution artifacts.
