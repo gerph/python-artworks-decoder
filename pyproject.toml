@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "riscos-artworks"
-version = "0.1.0"
+version = "0.2.0"
 description = "A structural decoder for Computer Concepts ArtWorks files"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
 ]
+
+[project.scripts]
+artworks-audit = "riscos_artworks.audit:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,6 +1,7 @@
 include LICENSE
 include README.md
 include PLAN.md
+recursive-include scripts *.py
 recursive-include tests *.py
 prune examples
 prune riscos-artworks-js

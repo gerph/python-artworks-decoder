@@ -75,6 +75,32 @@ An optional private-corpus test is enabled by pointing `ARTWORKS_EXAMPLES` at a
 directory of ArtWorks files. No sample documents or JavaScript reference files
 are included in the distribution.
 
+## Auditing a collection
+
+The collection auditor recursively scans `/cd/ARTWORKS` by default. It writes a
+SQLite database as it runs, checkpointing regularly, and exports deterministic
+CSV coverage data plus an aggregate JSON summary:
+
+```console
+python3 scripts/audit_artworks.py
+```
+
+The default outputs are `reports/artworks-audit.sqlite3`,
+`reports/artworks-audit.csv`, and `reports/artworks-audit.summary.json`.
+Generated reports are ignored by Git. Each file records whether it is an
+ArtWorks candidate, whether it decoded, the candidate's content hash, version,
+record and palette totals, nesting depth, complete per-type counts, unsupported
+types, feature families, work areas, and any decode error and source offset.
+
+Rerunning the command skips files whose size and modification time have not
+changed. Use `--refresh` to decode everything again with the current decoder,
+`--restart` to replace existing audit state, or `--export-only` to recreate the
+CSV and JSON from a partially or fully completed database. `--output PREFIX`
+selects a different destination.
+
+After interruption, simply run the same command again. Up to the current
+checkpoint is retained in SQLite and scanning resumes without duplicate rows.
+
 The format coverage follows `riscos-artworks-js` commit
 `fb8525eedb663af882fb26f87d199ca4ed60d52b`. ArtWorks is a trademark of its
 respective owner. This independent decoder is distributed under the MIT

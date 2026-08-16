@@ -6,6 +6,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+/reports/
 examples/
 riscos-artworks-js/
-

@@ -54,3 +54,12 @@ are compatibility inputs only and must never be committed.
 - Undo and sprite work areas remain opaque; the palette is interpreted.
 - Versions beyond documented 9 and 10 are accepted when signatures and
   structure are valid.
+
+## Collection audit utility
+
+- [x] Add a resumable SQLite auditor for large trees of possible ArtWorks files.
+- [x] Export deterministic per-file CSV coverage and an aggregate JSON summary.
+- [x] Report versions, record types, nesting, features, work areas, unknown
+      records, hashes, and detailed decode failures.
+- [x] Test successful, non-ArtWorks, failed, resumed, and export-only scans.
+- [x] Audit all 1,414 files under `/cd/ARTWORKS` and verify generated reports.
