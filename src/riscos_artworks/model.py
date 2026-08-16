@@ -208,6 +208,8 @@ Path = tuple[PathElement, ...]
 
 @dataclass(frozen=True, slots=True)
 class ColourIndex:
+    """A raw indexed, direct-BGR, or transparent colour reference."""
+
     value: int
 
     @property
@@ -236,6 +238,8 @@ class ColourIndex:
 
 @dataclass(frozen=True, slots=True)
 class PaletteEntry:
+    """One named ArtWorks palette entry with raw components and flags."""
+
     name: DecodedString
     colour: int
     component_0: int
@@ -260,6 +264,8 @@ class PaletteEntry:
 
 @dataclass(frozen=True, slots=True)
 class Palette:
+    """An indexed palette retaining both complete header words."""
+
     count_word: int
     control_word: int
     entries: tuple[PaletteEntry, ...]
@@ -291,6 +297,8 @@ class WorkAreaSection:
 
 @dataclass(frozen=True, slots=True)
 class ArtWorksHeader:
+    """The complete interpreted 128-byte ArtWorks file header."""
+
     identifier: DecodedString
     version: int
     program: DecodedString
@@ -318,6 +326,8 @@ class ArtWorksHeader:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Record:
+    """Fields shared by every linked ArtWorks record."""
+
     type_word: int
     type_code: int
     control_word: int
@@ -446,8 +456,8 @@ class LineCapRecord(Record):
     def triangle_dimensions(self) -> tuple[int, int] | None:
         if self.cap_style != CapStyle.TRIANGLE:
             return None
-        return ((self.cap_triangle >> 16) & 0xFFFF,
-                self.cap_triangle & 0xFFFF)
+        return (self.cap_triangle & 0xFFFF,
+                (self.cap_triangle >> 16) & 0xFFFF)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -593,6 +603,8 @@ class EndMarkerRecord(MarkerRecord):
 
 @dataclass(frozen=True, slots=True)
 class RecordList:
+    """One node in an ArtWorks list of record lists."""
+
     pointer: RelativePointer
     records: tuple[Record, ...]
     span: SourceSpan
@@ -613,6 +625,8 @@ class RecordList:
 
 @dataclass(frozen=True, slots=True)
 class ArtWorksSummary:
+    """A compact deterministic summary suitable for structural comparison."""
+
     source_length: int
     top_level_lists: int
     records: int
@@ -623,6 +637,8 @@ class ArtWorksSummary:
 
 @dataclass(frozen=True, slots=True)
 class ArtWorks:
+    """An eagerly decoded, immutable ArtWorks document."""
+
     header: ArtWorksHeader
     record_lists: tuple[RecordList, ...]
     palette: Palette | None
@@ -631,23 +647,28 @@ class ArtWorks:
 
     @classmethod
     def from_buffer(cls, data: object) -> ArtWorks:
+        """Decode a contiguous buffer-compatible object."""
         from .decoder import decode_buffer
         return decode_buffer(data)
 
     @classmethod
     def from_file(cls, handle: object) -> ArtWorks:
+        """Decode at a binary handle's position, then restore that position."""
         from .decoder import decode_file
         return decode_file(handle)
 
     def walk(self, record_class: type[_RecordT] | None = None) -> Iterator[Record | _RecordT]:
+        """Yield records depth first in file order, optionally by class."""
         for record_list in self.record_lists:
             yield from record_list.walk(record_class)
 
     @property
     def unsupported_records(self) -> tuple[UnknownRecord, ...]:
+        """Return every record whose masked type is not understood."""
         return tuple(record for record in self.walk(UnknownRecord))
 
     def resolve_colour(self, colour: ColourIndex | int) -> int | None:
+        """Resolve a colour reference to a BGR word or transparent ``None``."""
         value = colour.value if isinstance(colour, ColourIndex) else colour
         if value == 0xFFFFFFFF:
             return None
@@ -656,11 +677,13 @@ class ArtWorks:
         return None if self.palette is None else self.palette.resolve(value)
 
     def palette_entry(self, index: int) -> PaletteEntry | None:
+        """Look up an entry safely, returning ``None`` when it is unavailable."""
         if self.palette is None or index < 0 or index >= len(self.palette.entries):
             return None
         return self.palette.entries[index]
 
     def structural_summary(self) -> ArtWorksSummary:
+        """Summarise record counts without discarding the decoded structure."""
         counts: dict[int, int] = {}
         total = 0
         unsupported = 0

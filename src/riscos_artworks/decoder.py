@@ -17,7 +17,7 @@ from . import model as m
 
 HEADER_SIZE = 0x80
 MAX_STRING_SIZE = 2048
-MAX_COLLECTION_SIZE = 1_000_000
+MAX_COLLECTION_SIZE = 0xFFFFFF
 
 
 class _Reader:
@@ -58,6 +58,7 @@ class _Reader:
         return m.DecodedString(content.decode("latin-1"), raw, padding)
 
     def terminated_string(self) -> m.DecodedString:
+        self.check(0, aligned=True)
         start = self.position
         maximum = min(self.limit, start + MAX_STRING_SIZE)
         nul = self.data.find(b"\0", start, maximum)
@@ -472,8 +473,8 @@ def decode_buffer(source: object) -> m.ArtWorks:
         view = memoryview(source)
     except TypeError as error:
         raise TypeError("data must support the buffer protocol") from error
-    if view.ndim != 1 or not view.c_contiguous:
-        raise TypeError("data must be a contiguous one-dimensional buffer")
+    if not view.c_contiguous:
+        raise TypeError("data must be a contiguous buffer")
     try:
         data = bytes(view.cast("B"))
     except TypeError as error:

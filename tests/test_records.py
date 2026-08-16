@@ -13,6 +13,7 @@ from riscos_artworks import (
     LineElement,
     MoveElement,
     PathRecord,
+    StartCapRecord,
     UnknownPathElement,
     Record00Record,
     Record22Record,
@@ -51,6 +52,11 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         fill = next(artwork.walk(FillColourRecord))
         self.assertEqual(fill.fill_type, 99)
         self.assertIsNone(fill.fill_type_enum)
+
+    def test_triangle_cap_dimensions_are_width_then_height(self) -> None:
+        cap = next(ArtWorks.from_buffer(record(
+            0x29, struct.pack("<II", 3, (4 << 16) | 2))).walk(StartCapRecord))
+        self.assertEqual(cap.triangle_dimensions, (2, 4))
 
     def test_flat_and_gradient_fills(self) -> None:
         flat = ArtWorks.from_buffer(record(0x26, struct.pack("<III", 0, 7, 3)))

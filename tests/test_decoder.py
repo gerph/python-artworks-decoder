@@ -60,6 +60,11 @@ class InputTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             ArtWorks.from_buffer(memoryview(bytearray(300))[::2])
 
+    def test_multidimensional_contiguous_buffer_is_accepted(self) -> None:
+        source = record(0x22)
+        view = memoryview(source).cast("B", shape=(len(source) // 4, 4))
+        self.assertEqual(ArtWorks.from_buffer(view).header.version, 9)
+
 
 class HeaderAndStructureTests(unittest.TestCase):
     def test_invalid_signatures_and_truncated_header(self) -> None:
@@ -127,6 +132,18 @@ class HeaderAndStructureTests(unittest.TestCase):
     def test_truncated_record_header(self) -> None:
         with self.assertRaises(TruncatedDataError):
             ArtWorks.from_buffer(bytes(header()) + b"\0" * 12)
+
+    def test_opaque_work_areas_are_bounded_by_header_offsets(self) -> None:
+        data = header(body=0x90, undo=0x80, sprite=0x88)
+        data.extend(b"undoDATA")
+        data.extend(b"sprite!!")
+        data.extend(struct.pack("<iiiiII4i", 0, 0, 0, 0, 0x22, 0,
+                                0, 0, 0, 0))
+        artwork = ArtWorks.from_buffer(data)
+        self.assertEqual([section.name for section in artwork.work_areas],
+                         ["undo_buffer", "sprite_area"])
+        self.assertEqual(artwork.work_areas[0].data, b"undoDATA")
+        self.assertEqual(artwork.work_areas[1].data, b"sprite!!")
 
 
 if __name__ == "__main__":
