@@ -87,6 +87,18 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(artwork.resolve_colour(0xFFFFFFFF), None)
         self.assertEqual(ColourIndex(0x00332211).bgr, None)
         self.assertEqual(ColourIndex(0x01332211).bgr, (0x33, 0x22, 0x11))
+        # "Registration Black" (Colour_RegBlack = -2, i.e. 0xFFFFFFFE)
+        # is a print-production sentinel, not a literal direct colour,
+        # even though it satisfies the same >= 0x01000000 test a real
+        # direct colour does -- resolves to solid black, not the
+        # near-white a naive BGR-bit extraction would give (confirmed
+        # against !TopCode/Binds/TopBinds.bas's own Colour_RegBlack
+        # constant and a real file, TestDocs/RegistrationBlackRect,d94).
+        self.assertFalse(ColourIndex(0xFFFFFFFE).is_direct)
+        self.assertTrue(ColourIndex(0xFFFFFFFE).is_registration_black)
+        self.assertEqual(ColourIndex(0xFFFFFFFE).bgr, (0, 0, 0))
+        self.assertEqual(artwork.resolve_colour(0xFFFFFFFE), 0x00000000)
+        self.assertEqual(artwork.palette.resolve(0xFFFFFFFE), 0x00000000)  # type: ignore[union-attr]
         self.assertEqual(artwork.palette.entries[0].colour_model_value, 1)  # type: ignore[union-attr]
         self.assertEqual(artwork.palette_entry(0).name.text, "Red")  # type: ignore[union-attr]
         self.assertIsNone(artwork.palette_entry(-1))

@@ -208,7 +208,29 @@ Path = tuple[PathElement, ...]
 
 @dataclass(frozen=True, slots=True)
 class ColourIndex:
-    """A raw indexed, direct-BGR, or transparent colour reference."""
+    """A raw indexed, direct-BGR, transparent, or registration-black
+    colour reference.
+
+    Two reserved sentinel values sit just below the indexed-value range
+    (below 0x01000000), both confirmed against the kernel's own
+    constants in !TopCode/Binds/TopBinds.bas:
+
+    * ``0xFFFFFFFF`` (``Colour_None = -1``) -- no colour/transparent.
+    * ``0xFFFFFFFE`` (``Colour_RegBlack = -2``) -- "Registration Black":
+      a print-production sentinel meaning "solid ink on every
+      separation plate", not a literal direct colour -- despite
+      satisfying the same ``value >= 0x01000000`` test a genuine direct
+      BGR colour does. Confirmed against Paths/PathFill.bas's own
+      "'None' and RegistrationBlack are absolutely disallowed [as a
+      graduated-fill colour]" comment, and against a real file
+      (TestDocs/RegistrationBlackRect,d94) with a StrokeColourRecord
+      set to this exact value, named to describe its own intended
+      on-screen appearance -- solid black, not the near-white a naive
+      BGR-bit extraction of 0xFFFFFFFE would otherwise produce (byte
+      0xFE in the low, "red", byte -- one off pure white). Resolve it
+      to solid black for any RGB preview purpose (see
+      ArtWorks.resolve_colour), the same way real ArtWorks itself
+      would show it on screen."""
 
     value: int
 
@@ -218,11 +240,15 @@ class ColourIndex:
 
     @property
     def is_direct(self) -> bool:
-        return 0x01000000 <= self.value < 0xFFFFFFFF
+        return 0x01000000 <= self.value < 0xFFFFFFFE
 
     @property
     def is_transparent(self) -> bool:
         return self.value == 0xFFFFFFFF
+
+    @property
+    def is_registration_black(self) -> bool:
+        return self.value == 0xFFFFFFFE
 
     @property
     def palette_index(self) -> int | None:
@@ -230,6 +256,8 @@ class ColourIndex:
 
     @property
     def bgr(self) -> tuple[int, int, int] | None:
+        if self.is_registration_black:
+            return (0, 0, 0)
         if not self.is_direct:
             return None
         return ((self.value >> 16) & 0xFF, (self.value >> 8) & 0xFF,
@@ -283,6 +311,8 @@ class Palette:
         value = colour.value if isinstance(colour, ColourIndex) else colour
         if value == 0xFFFFFFFF:
             return None
+        if value == 0xFFFFFFFE:
+            return 0x00000000  # "Registration Black" -- see ColourIndex's own docstring
         if value >= 0x01000000:
             return value
         return self.entries[value].colour if value < len(self.entries) else None
@@ -668,10 +698,20 @@ class ArtWorks:
         return tuple(record for record in self.walk(UnknownRecord))
 
     def resolve_colour(self, colour: ColourIndex | int) -> int | None:
-        """Resolve a colour reference to a BGR word or transparent ``None``."""
+        """Resolve a colour reference to a BGR word or transparent ``None``.
+
+        ``0xFFFFFFFE`` ("Registration Black", ``Colour_RegBlack`` --
+        see ColourIndex's own docstring) resolves to solid black
+        (``0x00000000``), not the raw sentinel value itself -- that
+        value satisfies ``value >= 0x01000000`` the same way a genuine
+        direct BGR colour does, but isn't one; returning it unresolved
+        would produce near-white (byte 0xFE in the low, "red", byte)
+        instead of the solid black it's meant to represent on screen."""
         value = colour.value if isinstance(colour, ColourIndex) else colour
         if value == 0xFFFFFFFF:
             return None
+        if value == 0xFFFFFFFE:
+            return 0x00000000
         if value >= 0x01000000:
             return value
         return None if self.palette is None else self.palette.resolve(value)
