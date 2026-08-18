@@ -6,6 +6,22 @@ without rendering, rewriting, normalising, or applying inherited styles.
 
 The package requires Python 3.11 or later and has no runtime dependencies.
 
+## Installation
+
+Install the published package with `pip`:
+
+```console
+python3 -m pip install riscos-artworks
+```
+
+Confirm that it is available:
+
+```console
+python3 -c 'import riscos_artworks; print(riscos_artworks.__version__)'
+```
+
+## Usage
+
 ```python
 from riscos_artworks import ArtWorks, PathRecord
 
