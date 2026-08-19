@@ -17,6 +17,7 @@ from riscos_artworks import (
     UnknownPathElement,
     Record00Record,
     Record22Record,
+    SpriteRecord,
 )
 
 from fixtures import bounded_record, header, path, record
@@ -103,11 +104,54 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(artwork.palette_entry(0).name.text, "Red")  # type: ignore[union-attr]
         self.assertIsNone(artwork.palette_entry(-1))
 
+    def test_sprite_record_with_a_palette_reads_its_own_entries(self) -> None:
+        # The word immediately after "values" is the palette's own
+        # entry count directly, with no separate flag word before it --
+        # confirmed against two real, deliberately contrasting files
+        # (AWDocs/TestDocs/Sprite16ColourPalettedMasked,d94 and
+        # Sprite256ColoursPaletedNoMask,d94): the word there reads
+        # exactly 16 and 256 respectively, each followed immediately by
+        # that many real, sensible-looking palette words (a 16-entry
+        # file starting with a clean 8-step greyscale ramp, for
+        # instance) -- see the decoder's own comment for the fuller
+        # story, including an earlier, wrong version of this fix.
+        body = (struct.pack("<I", 1) + b"HasPal\0" + b"x" * 5 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 2) +
+                struct.pack("<2I", 0x11223344, 0x55667788))
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "HasPal")
+        self.assertEqual(sprite.palette, (0x11223344, 0x55667788))
+
+    def test_sprite_record_with_an_implausible_count_degrades_to_no_palette(self) -> None:
+        # Regression test: a real ArtWorks picture (an "SVG" logo,
+        # confirmed independently via riscos_sprites/riscos-dumpsprites
+        # against the same sprite extracted separately: 32bpp, no
+        # palette at all) raised "sprite palette count exceeds record"
+        # here -- that sprite's own record appears to carry additional
+        # fields (at least one further embedded string resembling a
+        # mask colour name) this decoder doesn't yet model, throwing
+        # off this word's own true position for that case specifically.
+        # Rather than raise (crashing every caller) or guess at that
+        # structure without a confirmed example to check against, an
+        # implausible count here degrades to an empty palette instead --
+        # consistent with the one real case seen so far.
+        body = (struct.pack("<I", 1) + b"NoPal\0" + b"x" * 6 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 0xFFFFFFFF))
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "NoPal")
+        self.assertEqual(sprite.palette, ())
+
     def test_every_reference_record_body_has_a_typed_decoder(self) -> None:
         end_path = struct.pack("<I", 0)
         fixed8 = b"short\0xx"
         fixed24 = b"long\0" + b"x" * 19
         fixed32 = b"Layer\0" + b"x" * 26
+        # Trailing word is the palette's own entry count (0 = none) --
+        # see test_sprite_record_with_a_palette_reads_its_own_entries
+        # and test_sprite_record_with_an_implausible_count_degrades_to_no_palette
+        # above for the two more interesting cases spelled out explicitly.
         sprite_body = (struct.pack("<I", 1) + b"Sprite\0" + b"x" * 5 +
                        struct.pack("<16I", *range(16)) + struct.pack("<I", 0))
         cases = {

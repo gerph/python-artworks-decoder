@@ -305,12 +305,42 @@ class _Decoder:
             name = r.fixed_string(12)
             values = tuple([r.u32(), r.u32()] + [r.i32() for _ in range(6)] +
                            [r.u32() for _ in range(8)])
+            # The word immediately after "values" is the palette's own
+            # entry count directly -- confirmed against two real,
+            # deliberately contrasting files (AWDocs/TestDocs/
+            # Sprite16ColourPalettedMasked,d94 and
+            # Sprite256ColoursPaletedNoMask,d94): the word there reads
+            # exactly 16 and 256 respectively, each followed immediately
+            # by that many real, sensible-looking palette words (a
+            # 16-entry file starting with a clean 8-step greyscale ramp,
+            # for instance) -- not preceded by any separate flag word,
+            # disproving an earlier version of this fix that inserted
+            # one (based on a single palette-less 32bpp sprite, where it
+            # happened to coincidentally still work).
+            #
+            # A genuinely palette-less sprite (32bpp/direct-colour, with
+            # no palette at all -- confirmed independently via
+            # riscos_sprites/riscos-dumpsprites on that same sprite,
+            # extracted separately from a real document) reads an
+            # implausible value here instead of a clean 0: that kind of
+            # sprite's own record appears to carry additional fields (at
+            # least one further embedded string resembling a mask colour
+            # name, e.g. "White") this decoder doesn't yet model, which
+            # "values" above -- correct for the two indexed examples --
+            # doesn't account for, throwing off this word's own true
+            # position for that case specifically. Rather than guess at
+            # that structure without a confirmed real example to check
+            # against, an implausible count here is treated the same as
+            # a confirmed no-palette sprite (empty palette) instead of
+            # raising -- consistent with the one real case seen so far,
+            # and no worse than raising for any other.
             count = r.u32()
             if count > MAX_COLLECTION_SIZE or count > (r.limit - r.position) // 4:
-                raise TruncatedDataError("sprite palette count exceeds record", r.position - 4)
+                count = 0
+            palette = tuple(r.u32() for _ in range(count))
             return m.SpriteRecord, {"unknown_24": unknown_24, "name": name,
                                     "unknown_values": values,
-                                    "palette": tuple(r.u32() for _ in range(count))}
+                                    "palette": palette}
         if code == 0x06:
             return m.GroupRecord, {"unknown_values": (r.u32(), r.u32(), r.u32())}
         if code == 0x0A:
