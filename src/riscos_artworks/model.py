@@ -17,7 +17,7 @@ __all__ = [
     "DecodedString", "DistortionGroupRecord", "EllipseRecord", "EmptyRecord",
     "EndCapRecord", "EndElement", "EndMarkerRecord", "FileInfoRecord",
     "FillColourRecord", "FillType", "FontNameRecord", "FontSizeRecord",
-    "GroupRecord", "JoinStyle", "JoinStyleRecord", "LayerRecord",
+    "GroupRecord", "JoinStyle", "JoinStyleRecord", "JpegRecord", "LayerRecord",
     "LineCapRecord", "LineElement", "MarkerRecord", "MarkerStyle",
     "MoveElement", "Palette", "PaletteEntry", "Path", "PathElement",
     "PathRecord", "PerspectiveGroupRecord", "Point", "Record", "RecordList",
@@ -68,6 +68,7 @@ class RecordType(IntEnum):
     START_MARKER = 0x3E
     END_MARKER = 0x3F
     DISTORTION_SUBGROUP = 0x42
+    JPEG = 0x6D
 
 
 class FillType(IntEnum):
@@ -484,6 +485,27 @@ class SpriteRecord(Record):
     name: DecodedString
     unknown_values: tuple[int, ...]
     palette: tuple[int, ...]
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JpegRecord(Record):
+    """An embedded JPEG image, complete standalone JPEG bytes with no
+    area wrapper of its own (unlike SpriteRecord, whose own pixel data
+    lives in a separate shared area -- data here is simply the JPEG
+    file itself, ready to embed as-is). Must be the last record in its
+    own list. Confirmed against a real file (AWDocs/TestDocs/
+    JPEG,d94): pixel_width/pixel_height and dpi_x/dpi_y both match
+    values independently decoded straight from the embedded JPEG's own
+    SOF0 and JFIF APP0 markers."""
+
+    unknown_24: int
+    pixel_width: int
+    pixel_height: int
+    dpi_x: int
+    dpi_y: int
+    corner: tuple[Point, Point, Point]
+    matrix: tuple[int, int, int, int, int, int]
     data: bytes
 
 

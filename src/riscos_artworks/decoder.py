@@ -522,6 +522,41 @@ class _Decoder:
             cls = m.StartMarkerRecord if code == 0x3E else m.EndMarkerRecord
             return cls, {"marker_style": r.i32(), "marker_width": r.u32(),
                          "marker_height": r.u32()}
+        if code == 0x6D:
+            self._require_last(last, "jpeg", r.position)
+            # Confirmed against a real file (AWDocs/TestDocs/JPEG,d94):
+            # pixel_width/pixel_height match the embedded JPEG's own
+            # SOF0 marker exactly (192, 74), and dpi_x/dpi_y match its
+            # own JFIF APP0 density fields exactly (90, 90) -- both
+            # decoded independently from the JPEG bytes themselves, not
+            # merely assumed from field position. The 24-byte "corner"
+            # field reuses the same 3-point structure
+            # EllipseRecord/RoundedRectangleRecord call "triangle"
+            # (unconfirmed purpose there too); here the three points
+            # read as (min_x,min_y), (max_x,min_y), (max_x,max_y) --
+            # three of the picture's own four bounding-box corners. The
+            # transform matrix (a,b,c,d,e,f) that follows matches
+            # DrawFile's own embedded-JPEG object convention exactly
+            # (see riscos-impression's own formats/drawfile.py) --
+            # identity scale, e/f equal to the bounding box's own
+            # min_x/min_y, in the one file checked.
+            unknown_24 = r.u32()
+            pixel_width = r.u32()
+            pixel_height = r.u32()
+            dpi_x = r.u32()
+            dpi_y = r.u32()
+            corner = _polyline(r, 3)
+            matrix = tuple(r.i32() for _ in range(6))
+            length = r.u32()
+            if length > (r.limit - r.position):
+                raise TruncatedDataError("jpeg length exceeds available data", r.position - 4)
+            data = r.bytes(length)
+            return m.JpegRecord, {
+                "unknown_24": unknown_24,
+                "pixel_width": pixel_width, "pixel_height": pixel_height,
+                "dpi_x": dpi_x, "dpi_y": dpi_y, "corner": corner,
+                "matrix": matrix, "data": data,
+            }
         # Unknown final records have no safe end and therefore no raw body.
         return m.UnknownRecord, {}
 

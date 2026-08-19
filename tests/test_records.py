@@ -10,6 +10,7 @@ from riscos_artworks import (
     EndElement,
     FillColourRecord,
     JoinStyleRecord,
+    JpegRecord,
     LineElement,
     MoveElement,
     PathRecord,
@@ -121,6 +122,29 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(ColourIndex(0xFFFF9C00).bgr, (99, 0, 0))
         self.assertEqual(ColourIndex(0xFFFF9900).bgr, (102, 0, 0))
 
+    def test_jpeg_record_decodes_its_own_embedded_jpeg_bytes(self) -> None:
+        # Confirmed against a real file (AWDocs/TestDocs/JPEG,d94):
+        # pixel_width/pixel_height and dpi_x/dpi_y both match values
+        # independently decoded straight from a real embedded JPEG's
+        # own SOF0 and JFIF APP0 markers -- see the decoder's own
+        # comment for the full story, including how an earlier version
+        # of this fix had every field one word out of position.
+        fake_jpeg = b"\xff\xd8\xff\xe0FAKEJPEGBYTES\xff\xd9"
+        body = (
+            struct.pack("<I", 0) +  # unknown_24
+            struct.pack("<II", 192, 74) +  # pixel_width, pixel_height
+            struct.pack("<II", 90, 90) +  # dpi_x, dpi_y
+            struct.pack("<6i", 46848, 69376, 145152, 69376, 145152, 107264) +  # corner
+            struct.pack("<6i", 0x10000, 0, 0, 0x10000, 46848, 69376) +  # matrix
+            struct.pack("<I", len(fake_jpeg)) +
+            fake_jpeg
+        )
+        artwork = ArtWorks.from_buffer(record(0x6D, body))
+        jpeg = next(artwork.walk(JpegRecord))
+        self.assertEqual((jpeg.pixel_width, jpeg.pixel_height), (192, 74))
+        self.assertEqual((jpeg.dpi_x, jpeg.dpi_y), (90, 90))
+        self.assertEqual(jpeg.data, fake_jpeg)
+
     def test_sprite_record_with_a_palette_reads_its_own_entries(self) -> None:
         # The word immediately after "values" is the palette's own
         # entry count directly, with no separate flag word before it --
@@ -221,6 +245,10 @@ class PrimitiveAndRecordTests(unittest.TestCase):
             0x3B: struct.pack("<10i", *range(10)), 0x3D: end_path,
             0x3E: struct.pack("<iII", -1, 2, 3),
             0x3F: struct.pack("<iII", -1, 2, 3), 0x42: b"",
+            0x6D: (struct.pack("<I", 0) + struct.pack("<4I", 1, 1, 1, 1) +
+                  struct.pack("<6i", 0, 0, 0, 0, 0, 0) +
+                  struct.pack("<6i", 0x10000, 0, 0, 0x10000, 0, 0) +
+                  struct.pack("<I", 2) + b"\xff\xd8"),
         }
         for code, body in cases.items():
             with self.subTest(code=hex(code)):
