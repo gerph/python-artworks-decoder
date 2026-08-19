@@ -1,0 +1,722 @@
+<?xml version="1.0"?>
+<!DOCTYPE riscos-prm PUBLIC "-//Gerph//DTD PRM documentation 1.03//EN"
+                            "http://gerph.org/dtd/103/prm.dtd">
+
+<riscos-prm>
+<chapter title="ArtWorks Document Format">
+
+<section title="Introduction and Overview">
+<p>
+ArtWorks is a vector drawing application for RISC OS, produced by
+Computer Concepts (later Xara). This chapter describes the on-disk
+format of an ArtWorks document (filetype &amp;D94), as reconstructed by
+the <userinput>riscos_artworks</userinput> Python package -- a structural decoder
+only, with no rendering of its own -- from empirical analysis of real
+ArtWorks documents. ArtWorks' own file format was never published, so
+this description is derived entirely from what real files were found to
+contain, cross-checked wherever possible against independent evidence:
+the <userinput>riscos-artworks-js</userinput> reference project (an independently
+maintained JavaScript decoder/renderer whose own behaviour this package
+deliberately mirrors in several places, most notably its own
+<userinput>denormalise()</userinput> tree transform -- see "Flat Sibling Runs and
+denormalise()" below), the <userinput>riscos-dumpsprites</userinput> project (used
+to independently verify embedded sprite pixel data), and, for colour
+values specifically, real ArtWorks' own "Object Info" colour-picker
+dialog, read directly off a real document by a human tester.
+</p>
+<p>
+Because the format is reconstructed rather than specified, many fields
+have no confirmed purpose: the decoder reads them, or skips past them,
+without needing to know what they mean. Every field described in this
+chapter states whether its purpose is confirmed against real data,
+inferred from context, or entirely unknown. Fields with no established
+purpose are marked accordingly rather than omitted, so that a reader
+attempting a fuller implementation knows exactly what remains to be
+determined. A consolidated list of open questions appears in "Unresolved
+and Undocumented Areas" at the end of this chapter.
+</p>
+<p>
+<userinput>riscos_artworks</userinput> is deliberately a <em>structural</em>
+decoder: it turns the raw bytes of a document into a navigable tree of
+typed Python objects (see "Record Lists and the Record Tree" below), but
+does not itself render that tree to any image format. Rendering --
+walking the tree, resolving inherited style/colour state, producing SVG
+or PDF output -- is left to a separate consumer (the
+<userinput>riscos-impression</userinput> project's own ArtWorks converter is the
+primary one this chapter's own understanding was developed alongside).
+Where this chapter describes how a field is <em>used</em> by a renderer
+rather than merely what it contains, that description reflects
+<userinput>riscos-impression</userinput>'s own confirmed behaviour, not something
+<userinput>riscos_artworks</userinput> itself does.
+</p>
+</section>
+
+<section title="File Structure Overview">
+<p>
+An ArtWorks document is built from several distinct areas, addressed
+by byte offset from the start of the file:
+</p>
+<p>
+<list type="unordered">
+<item>a fixed-size, 128-byte file header, identifying the file and
+giving the byte offsets of every other area (see "File Header");</item>
+<item>an optional palette, giving the document's own named colours (see
+"Colour Encoding");</item>
+<item>the record body: one or more linked lists of records forming a
+tree, describing every drawn object, style attribute, and grouping in
+the document (see "Record Lists and the Record Tree" and "Record
+Types");</item>
+<item><p>an optional undo buffer and/or sprite area, each a distinct
+byte range recorded as a <userinput>WorkAreaSection</userinput> but not
+otherwise decoded by this package (see "Work Areas" below).</p></item>
+</list>
+</p>
+<p>
+Only the header has a fixed position (offset 0). Every other area's
+position is read from the header itself, and areas are not necessarily
+contiguous or in any particular order relative to one another on disk.
+</p>
+
+<subsection title="Work Areas">
+<p>
+The header carries separate offsets for an "undo buffer" and a "sprite
+area" (see "File Header" below), each a distinct byte range within the
+file. <userinput>riscos_artworks</userinput> exposes each present one as a
+<userinput>WorkAreaSection</userinput> (a name, a <userinput>SourceSpan</userinput>, and the
+raw bytes themselves) but does not decode its own internal structure --
+neither area's own layout is understood beyond "some real files have
+one". This is a distinct concept from the <em>per-sprite</em> shared
+native sprite area a run of <userinput>SpriteRecord</userinput>s' own pixel data
+lives in (see "Sprite Records and Embedded Pixel Data" below): that
+area sits within the record body itself, addressed relative to a
+<userinput>SpriteRecord</userinput>'s own position, not via this header-level
+sprite area offset.
+</p>
+</subsection>
+</section>
+
+<section title="File Header">
+<p>
+The file begins with a fixed 128-byte header. All multi-byte fields
+are little-endian.
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-3" name="identifier" data-size="4">The literal ASCII string <userinput>"Top!"</userinput>. Any other value is rejected as not an ArtWorks file.</offset>
+<offset number="4-7" name="version" data-size="4">A version number. Not otherwise interpreted by this decoder.</offset>
+<offset number="8-15" name="program" data-size="8">The literal ASCII string <userinput>"TopDraw"</userinput> (padded to 8 bytes with a trailing NUL). Any other value is rejected.</offset>
+<offset number="16-19" data-size="4" state="undefined">Unknown.</offset>
+<offset number="20-23" name="body_offset" data-size="4">Byte offset of the record body's own first list (see "Record Lists and the Record Tree"). Must be at least 128 (past the header) and word-aligned; a document failing either check is rejected.</offset>
+<offset number="24-27" name="european_paper_width" data-size="4">The document's own declared page width on the "European" (A4-based) paper size convention. Inferred from the field's relationship to american_paper_width/height below and from cross-checking against A4's own point size; not independently confirmed to sub-pixel precision the way american_paper_width/height was.</offset>
+<offset number="28-31" name="european_paper_height" data-size="4">The document's own declared page height on the "European" paper size convention; see european_paper_width.</offset>
+<offset number="32-35" data-size="4" state="undefined">Unknown.</offset>
+<offset number="36-39" data-size="4" state="undefined">Unknown.</offset>
+<offset number="40-43" name="undo_buffer_offset" data-size="4">Byte offset of the undo buffer work area, or -1 if absent. See "Work Areas".</offset>
+<offset number="44-47" name="sprite_area_offset" data-size="4">Byte offset of the header-level sprite area work area, or -1 if absent. See "Work Areas" -- this is <em>not</em> the same thing as an individual SpriteRecord's own shared native sprite area (see "Sprite Records and Embedded Pixel Data").</offset>
+<offset number="48-51" data-size="4" state="undefined">Unknown.</offset>
+<offset number="52-55" name="american_paper_width" data-size="4">The document's own declared page width in ArtWorks' own native units. Confirmed exactly (to full precision, no rounding) against US Letter's own point size (612pt): every real document checked gives american_paper_width / 612 == 640.0 precisely, establishing ArtWorks' own native-unit-to-point ratio at exactly 640 native units per point. See "Colour Encoding" for how this differs from a palette entry's own component scaling, and riscos-impression's own ARTWORKS_UNIT_TO_USER_UNITS constant for where this figure is used downstream.</offset>
+<offset number="56-59" name="american_paper_height" data-size="4">The document's own declared page height, on the same "American" (US Letter-based) convention and unit scale as american_paper_width.</offset>
+<offset number="60-63" name="palette_offset" data-size="4">Byte offset of the palette (see "Colour Encoding"), or -1 if the document has none.</offset>
+<offset number="64-91" data-size="28" state="undefined">Seven further unknown words.</offset>
+<offset number="92-127" data-size="36" state="undefined">Reserved/padding, not otherwise interpreted.</offset>
+</offset-table>
+</p>
+<p>
+Any offset field that is present (not -1) must fall within the file and
+be word-aligned; a document failing either check is rejected as
+malformed.
+</p>
+</section>
+
+<section title="Record Lists and the Record Tree">
+<p>
+The record body is a tree, built from two linked structures that
+alternate with each other: <em>record lists</em> (siblings drawn/applied
+in file order) and <em>records</em> (the individual typed items within
+one list). Both use the same underlying mechanism -- a small
+"previous/next" header, described next -- but with the two words in
+opposite order.
+</p>
+
+<subsection title="Relative Pointers">
+<p>
+Both a record list and an individual record begin with an 8-byte
+header of two signed 32-bit words, each a byte offset <em>relative to
+the position of the header itself</em> (not relative to the file start,
+and not relative to each other):
+</p>
+<p>
+<list type="unordered">
+<item>a record <em>list</em> header reads as (previous, next);</item>
+<item>an individual <em>record</em> header reads the same two words
+in the opposite order: (next, previous).</item>
+</list>
+</p>
+<p>
+For both, <userinput>previous</userinput> must never be positive (it is zero, for
+the first item in a chain, or negative, pointing backwards to the prior
+item) and <userinput>next</userinput> must never be negative (it is zero, for the
+last item in a chain, or positive, pointing forward to the next item).
+A document violating either constraint, or whose <userinput>next</userinput>/
+<userinput>previous</userinput> target falls outside the file or is misaligned,
+is rejected. <userinput>riscos_artworks</userinput> also rejects any document
+whose pointers form a cycle (the same list, record, or sub-list offset
+visited twice), since the format has no other mechanism to bound a walk.
+</p>
+</subsection>
+
+<subsection title="Record List Chaining">
+<p>
+Starting from the header's own <userinput>body_offset</userinput>, the document
+has one or more <em>top-level</em> record lists, chained via each
+list's own <userinput>next</userinput> pointer (0 for the last one). Each record
+list's own body (immediately following its 8-byte previous/next header)
+is a chain of records, again linked via <userinput>next</userinput>/
+<userinput>previous</userinput> (0 for the last record in the list).
+</p>
+<p>
+A record may itself introduce a <em>child</em> record list -- e.g. a
+group record's own contents, or a shape's own local style overrides
+(see "Flat Sibling Runs and denormalise()" below for why the latter
+matters). Where present, that child list's own position is derived from
+the record's own <userinput>next</userinput> pointer landing exactly on a further
+previous/next header immediately after the record's own body: unlike a
+plain sibling record (whose own <userinput>next</userinput> simply chains to the
+next record at the same level), a record with children has its
+<userinput>next</userinput> pointer land on a nested list header instead, which
+riscos_artworks distinguishes from a further sibling by then reading
+<em>that</em> header's own <userinput>next</userinput> pointer to find where the
+actual child content begins.
+</p>
+</subsection>
+
+<subsection title="Record Common Fields">
+<p>
+Immediately following a record's own 8-byte previous/next header, every
+record shares a fixed set of fields before its own type-specific body
+begins:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-3" name="type_word" data-size="4">The record's own type code in the low byte (see "Record Types"); the remaining three bytes are not otherwise interpreted by this decoder.</offset>
+<offset number="4-7" name="control_word" data-size="4">Per-record flags. Bit 1 (value 2) is confirmed as a visibility flag: clear means the object is hidden and should not be drawn -- confirmed against real documents where a record with this bit clear is absent from ArtWorks' own rendered output. Other bits are unconfirmed.</offset>
+<offset number="8-23" name="bounding_box" data-size="16">Four signed 32-bit words: min_x, min_y, max_x, max_y, in the document's own native coordinate space (see american_paper_width in "File Header" for the native-units-per-point conversion). Confirmed as a genuine, usable bounding box for every geometry-bearing record type; its meaning for a pure style/attribute record (e.g. a stroke colour record) is not otherwise significant.</offset>
+</offset-table>
+</p>
+<p>
+The record's own type-specific body (see "Record Types") follows
+immediately after these common fields, and continues either to the
+position implied by the record's own <userinput>next</userinput> pointer (for a
+record with siblings or children following it) or to the natural end of
+its own decoded fields (for the last record in a list, where no
+externally-imposed boundary exists).
+</p>
+</subsection>
+
+<subsection title="Flat Sibling Runs and denormalise()">
+<p>
+A run of sibling records in one list -- e.g. a shape followed by its own
+local fill-colour override -- is stored <em>flat</em>, exactly as
+described above: each is simply the next record in the same list, not
+nested inside the one before it. This is <em>not</em> the tree shape a
+renderer should walk directly. Real ArtWorks (and the independently
+maintained <userinput>riscos-artworks-js</userinput> reference, whose own
+<userinput>Artworks.denormalise()</userinput> this package's own
+<userinput>denormalise()</userinput> function mirrors byte-for-byte in behaviour)
+re-nests every such flat run before rendering: <userinput>[A, B, C]</userinput>
+becomes <userinput>A</userinput> containing a single synthetic child list holding
+just <userinput>B</userinput>, which in turn contains a single synthetic child
+list holding just <userinput>C</userinput> -- each subsequent sibling becomes the
+<em>sole child</em> of the one immediately before it, all the way down.
+</p>
+<p>
+This matters because a style attribute (fill colour, stroke width, and
+so on) only affects records nested <em>beneath</em> it in the tree, not
+records that merely follow it at the same file-order level. Confirmed
+with a minimal, real-world repro: a single rectangle with one local
+fill-colour record immediately after it (both flat siblings as decoded)
+renders with the ambient default colour (black) instead of the intended
+fill unless <userinput>denormalise()</userinput> runs first. Any renderer built on
+this package should call <userinput>denormalise()</userinput> once, on a freshly
+decoded document, before doing any rendering or attribute-cascade walk
+of its own; nothing about decoding itself requires it, since the flat
+form is what is genuinely on disk and remains the right representation
+for anything inspecting raw file structure (offsets, spans, audits)
+rather than rendering it.
+</p>
+</subsection>
+</section>
+
+<section title="Record Types">
+<p>
+The low byte of a record's own <userinput>type_word</userinput> (see "Record
+Common Fields") identifies its type:
+</p>
+<p>
+<value-table head-number="Code" head-value="Record">
+<value number="0x00">Empty/placeholder record, no body.</value>
+<value number="0x01">Text object.</value>
+<value number="0x02">Path (the general vector shape record).</value>
+<value number="0x05">Embedded sprite.</value>
+<value number="0x06">Group.</value>
+<value number="0x0A">Layer.</value>
+<value number="0x21">Work area marker (carries a reference to the document's own palette; must be the last record in its list).</value>
+<value number="0x22">Empty/placeholder record, no body; must be the last record in its list.</value>
+<value number="0x23">Save location (the file's own last-saved path).</value>
+<value number="0x24">Stroke colour.</value>
+<value number="0x25">Stroke width.</value>
+<value number="0x26">Fill colour (flat, linear gradient, or radial gradient).</value>
+<value number="0x27">Line join style.</value>
+<value number="0x28">End cap style.</value>
+<value number="0x29">Start cap style.</value>
+<value number="0x2A">Winding rule (fill rule).</value>
+<value number="0x2B">Dash pattern.</value>
+<value number="0x2C">Rectangle (a specialised path).</value>
+<value number="0x2D">One text character, within a text object.</value>
+<value number="0x2E">Unknown; must be the last record in its list.</value>
+<value number="0x2F">Font name.</value>
+<value number="0x30">Font size.</value>
+<value number="0x31">Unknown, four words.</value>
+<value number="0x32">Unknown, one word; must be the last record in its list.</value>
+<value number="0x33">Unknown, six signed words.</value>
+<value number="0x34">Ellipse (a specialised path).</value>
+<value number="0x35">Rounded rectangle (a specialised path).</value>
+<value number="0x37">Distortion group (an envelope-distorted group of objects).</value>
+<value number="0x38">Perspective group (a perspective-distorted group of objects).</value>
+<value number="0x39">File info (free-text document information).</value>
+<value number="0x3A">Blend group (a computed transition between two keyframe shapes).</value>
+<value number="0x3B">Blend options (step count and other blend parameters).</value>
+<value number="0x3D">Blend path (one keyframe shape within a blend group).</value>
+<value number="0x3E">Start marker (an arrowhead-style decoration at a path's start).</value>
+<value number="0x3F">End marker, the same shape as 0x3E but for a path's end.</value>
+<value number="0x42">Distortion subgroup; empty body.</value>
+<value number="(other)">Unrecognised. Decoded as a generic UnknownRecord, retaining its own raw body bytes where a boundary is known (see "Record Common Fields") so the bytes are not lost even though their meaning isn't.</value>
+</value-table>
+</p>
+<p>
+Several codes are marked "must be the last record in its list" above:
+the decoder rejects a document where such a record is followed by a
+further sibling. This is confirmed by real-file behaviour rather than
+understood structurally -- these record types appear to be ones whose
+own body extends to consume the rest of their list's available space
+(most obviously true of the embedded-sprite record, whose own trailing
+palette and pixel-data search both need an unambiguous "rest of the
+file" to work with -- see "Sprite Records and Embedded Pixel Data").
+</p>
+
+<subsection title="Path-Based Records">
+<p>
+Several record types share the same underlying vector path
+representation: Path (0x02) directly, and Rectangle (0x2C), Ellipse
+(0x34), Rounded Rectangle (0x35), and Blend Path (0x3D) as
+specialisations (each also carrying extra fields of its own, described
+below). See "Path Element Encoding" for the shared path format itself.
+</p>
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x02" name="path">A path (see "Path Element Encoding"), running to the end of the record's own available space.</offset>
+<offset number="0x2C" name="unknown_24, path" data-size="4 + path">One unknown word, then a path.</offset>
+<offset number="0x34" name="triangle, path" data-size="24 + path">Three points (24 bytes: three pairs of signed 32-bit x/y) of unconfirmed purpose -- possibly a bounding/control triangle for the ellipse's own generating transform, by analogy with a Bezier control structure, but not independently confirmed -- followed by a path.</offset>
+<offset number="0x35" name="corner_radius, triangle, path" data-size="4 + 24 + path">One word (the rounded corner's own radius, in native units), then the same three-point structure as 0x34, then a path.</offset>
+<offset number="0x3D" name="path">A path, running to the end of the record's own available space -- structurally identical to a plain Path (0x02) record; see "Blend Records" for how this is used as one keyframe within a Blend Group.</offset>
+</offset-table>
+</p>
+</subsection>
+
+<subsection title="Path Element Encoding">
+<p>
+A path is a sequence of elements, each beginning with a 32-bit tag word
+whose low byte identifies the element type (the remaining bits are
+flags -- see below) and whose body (if any) immediately follows:
+</p>
+<p>
+<value-table head-number="Tag (low byte)" head-value="Element">
+<value number="0x00">End of path. No body. Always the final element.</value>
+<value number="0x02">Move to a new subpath start. Body: one point (two signed 32-bit words, x then y).</value>
+<value number="0x04">Unknown element type. No body is read (the element's own tag word is retained, but nothing else); genuinely encountered in real files, not yet understood.</value>
+<value number="0x05">Close the current subpath. No body.</value>
+<value number="0x06">Bezier curve segment. Body: three points (24 bytes) -- first control point, second control point, end point -- in that order.</value>
+<value number="0x08">Straight line segment. Body: one point (the line's own end point).</value>
+<value number="(other)">Unsupported; decoding fails with an error rather than guessing at an unknown body length.</value>
+</value-table>
+</p>
+<p>
+The tag word's own high bit (bit 31) is confirmed as a "filled" flag on
+a path's first (Move) element: set means the path is filled according to
+the current winding rule, clear means it is drawn as an open/unfilled
+outline. Other flag bits carried in the tag word beyond the low byte are
+not otherwise interpreted.
+</p>
+</subsection>
+
+<subsection title="Style and Attribute Records">
+<p>
+These records carry no geometry of their own; each sets one piece of
+render state, inherited by every record nested beneath it once
+<userinput>denormalise()</userinput> has re-nested flat sibling runs (see "Flat
+Sibling Runs and denormalise()").
+</p>
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x24" name="colour" data-size="4">One colour reference (see "Colour References"). Sets the stroke colour.</offset>
+<offset number="0x25" name="width" data-size="4">One word: stroke width, in native units.</offset>
+<offset number="0x26" name="fill_type, unknown_28, ..." data-size="8 + variable">Two words -- fill_type (0 = flat, 1 = linear gradient, 2 = radial gradient; any other value is retained but not otherwise interpreted) and one further unknown word -- then, for fill_type 0, one colour reference; for fill_type 1 or 2, a two-point gradient line (16 bytes: start and end points defining the gradient's own axis) followed by two colour references (start and end). A gradient's own intermediate colours are never stored on disk -- they are computed at render time by whatever consumes this record.</offset>
+<offset number="0x27" name="join_style" data-size="4">One word: 0 = mitre, 1 = round, 2 = bevel.</offset>
+<offset number="0x28, 0x29" name="cap_style, cap_triangle" data-size="8">End cap (0x28) or start cap (0x29): cap_style (0 = butt, 1 = round, 2 = square, 3 = triangle) then one further word, only meaningful when cap_style is 3 -- a packed pair of 16-bit dimensions (width in the low half, height in the high half) for the triangular cap's own shape.</offset>
+<offset number="0x2A" name="winding_rule" data-size="4">One word: 0 = non-zero, 1 = even-odd. ArtWorks' own default (in the absence of any winding-rule record) is even-odd -- notably the <em>opposite</em> of SVG's own native default (non-zero), which a renderer targeting SVG needs to account for explicitly rather than relying on SVG's own default to match.</offset>
+<offset number="0x2B" name="pattern, offset, elements" data-size="4, then 8 + 4*n if pattern is non-zero">One signed word, pattern: zero means no dash pattern (solid line, no further fields). A non-zero value is followed by a dash offset word and a count word, then that many further words -- the dash pattern's own element lengths (alternating on/off segment lengths, by analogy with other vector formats' own dash arrays; not independently confirmed element-by-element).</offset>
+<offset number="0x3E, 0x3F" name="marker_style, marker_width, marker_height" data-size="12">Start marker (0x3E) or end marker (0x3F): a signed marker_style word (-1 = none, 0 = triangle, 1 = arrow head, 2 = circle, 3 = arrow tail), then width and height words giving the marker's own size in native units.</offset>
+</offset-table>
+</p>
+</subsection>
+
+<subsection title="Text Records">
+<p>
+ArtWorks text is a Text record (0x01) containing, once
+<userinput>denormalise()</userinput> has run, a nested chain of style records
+(font name, font size, fill/stroke colour) followed by one Character
+record (0x2D) per glyph.
+</p>
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x01" name="unknown_values, rectangle" data-size="24 + 32">Six unknown words, then a four-point rectangle (32 bytes: four x/y pairs) -- the text object's own bounding quadrilateral, allowing for a rotated text block. One of the six unknown words is confirmed as a rotation angle: riscos-impression reads word index 5 (the sixth word) divided by 65536.0 as the text's own rotation in degrees; the other five remain unconfirmed. A Text record draws nothing directly -- its own nested content (see above) does all the actual work.</offset>
+<offset number="0x2D" name="character_code, unknown_values" data-size="4 + 16">character_code: the glyph's own character code (confirmed as a plain character value, not a glyph index, for ordinary ASCII text). Four further unknown words follow. When ArtWorks can't rely on standard outline-font rendering for a character (see "Pathified Text" below), this record's own child_lists carries a full geometry record (typically a Path) tracing the glyph's own outline directly, rather than -- or in addition to -- relying on character_code plus the ambient font name/size.</offset>
+<offset number="0x2F" name="font_name" data-size="variable">A NUL-terminated string: the RISC OS outline font name (e.g. "Homerton.Medium").</offset>
+<offset number="0x30" name="x_size, y_size" data-size="8">Font size, in 1/16ths of a point (the same convention Font_SetFont's own R1/R2 parameters use) -- confirmed against real documents by cross-referencing y_size against CharacterRecord/TextRecord bounding box heights at several different declared sizes, landing consistently within a font's own expected cap-height/line-height range once divided by 16 (not, as an earlier reading assumed, already being in the document's own native coordinate units).</offset>
+</offset-table>
+</p>
+
+<subsubsection title="Pathified Text">
+<p>
+ArtWorks can convert ("pathify") individual characters into a real
+vector-traced outline instead of relying on the named outline font being
+available at render time. A pathified CharacterRecord carries this
+outline as a child geometry record (see the 0x2D entry above); a
+renderer should check for and prefer this child outline over any
+generic substitute-font text rendering when present, falling back to
+character_code plus the ambient font name/size only when no pathified
+outline exists. Confirmed against a real document previously rendering
+as low-quality substitute-font text; using the pathified outline instead
+matches a real reference render exactly.
+</p>
+</subsubsection>
+</subsection>
+
+<subsection title="Sprite Records and Embedded Pixel Data">
+<p>
+An embedded sprite is a Sprite record (0x05), which must be the last
+record in its own list.
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-3" name="unknown_24" data-size="4" state="undefined">Unknown.</offset>
+<offset number="4-15" name="name" data-size="12">A fixed 12-byte field: the sprite's own name, NUL-terminated/padded. Matches the corresponding name field in the sprite's own native pixel data (see below).</offset>
+<offset number="16-79" name="values" data-size="64">Sixteen words of unconfirmed purpose: two unsigned words, then six signed words, then eight unsigned words.</offset>
+<offset number="80-83" name="palette count" data-size="4">The number of palette entries immediately following (0 for a sprite with no palette of its own, e.g. a 32bpp/direct-colour sprite). A genuinely palette-less sprite's own record appears to carry at least one further embedded field (resembling a mask colour name) not otherwise modelled here, which can throw off this word's own true position for that specific case -- an implausible count here (larger than the remaining record space could hold) is treated as zero rather than raising, since a raise-on-any-anomaly policy would be no more informative and would break every other, correctly-modelled sprite in the same document.</offset>
+<offset number="84.." name="palette" data-size="4*count">That many raw palette words, in whatever colour representation the sprite's own mode uses (not further interpreted by this decoder -- these are native Sprite/OS-level palette words, a different representation entirely from an ArtWorks PaletteEntry; see "Colour Encoding").</offset>
+</offset-table>
+</p>
+<p>
+Immediately following the palette (for the last SpriteRecord in a
+contiguous run of one or more sprite records sharing the same
+generating operation -- e.g. every sprite dragged into a document in
+one paste), a standard 16-byte RISC OS sprite-area control block
+appears once, shared by every SpriteRecord in that run:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-3" name="size" data-size="4">The shared area's own total size in bytes, including this 16-byte header.</offset>
+<offset number="4-7" name="count" data-size="4">The number of native sprites chained within this one shared area -- one per SpriteRecord in the run that shares it, e.g. 8 for eight sprites pasted together in one operation.</offset>
+<offset number="8-11" name="first_offset" data-size="4">Always 16 in every file checked: the byte offset, relative to the area's own start, of the first native sprite record.</offset>
+<offset number="12-15" data-size="4">Repeats the area's own total size (same value as the size field above).</offset>
+</offset-table>
+</p>
+<p>
+Each native sprite record within that shared area then follows the
+standard RISC OS sprite layout: a next_offset word (the byte offset,
+<em>relative to this sprite's own start</em>, of the next sprite in the
+chain -- effectively that sprite's own total size, since sprites are
+packed contiguously; 0 for the last one), a 12-byte name field matching
+the owning SpriteRecord's own name (see above), then the sprite's
+further standard header fields (width in words minus one, height in
+rows minus one, first/last used bit within a word, image data offset,
+mask data offset, and mode word) and pixel/mask data. This matches the
+layout a full Sprite-file decoder (e.g. the separate
+<userinput>riscos_sprites</userinput> package) already expects once wrapped back
+into a minimal single-sprite area.
+</p>
+<p>
+Locating this shared area does not rely on any fixed byte gap after the
+palette: the gap before it was found to vary (48-56 bytes across
+different real single-sprite files, for reasons not otherwise modelled
+here) -- instead, <userinput>riscos_artworks</userinput> scans forward from the
+end of each SpriteRecord's own palette for the next occurrence of the
+<userinput>[size, count, 16, size]</userinput> pattern above, then walks that
+area's own native sprite chain matching by name. This also naturally
+handles the multi-sprite case: every sibling SpriteRecord in the same
+run independently finds the very same shared area this way, with no
+need to separately track which records belong to which run. The
+resulting raw bytes (one native sprite record, with its own trailing
+next_offset left as originally encoded but no area wrapper of its own)
+are exposed as SpriteRecord's own <userinput>data</userinput> field -- an empty
+byte string if no matching area/entry could be found.
+</p>
+</subsection>
+
+<subsection title="Grouping, Layers, and Document-Level Records">
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x06" name="unknown_values" data-size="12">Three unknown words. A Group record's own content is its nested child_lists, once denormalised (see "Flat Sibling Runs and denormalise()").</offset>
+<offset number="0x0A" name="unknown_24, name" data-size="36">One unknown word, then a fixed 32-byte layer name field.</offset>
+<offset number="0x21" name="(none)">No body of its own; carries a reference to the document's own decoded Palette (see "Colour Encoding") for convenience. Must be the last record in its list.</offset>
+<offset number="0x23" name="file_type, file_path" data-size="4 + variable">A RISC OS filetype word, then a NUL-terminated string: the file's own last-saved path. Must be the last record in its list.</offset>
+<offset number="0x39" name="file_info" data-size="variable">A NUL-terminated string: free-text document information. Must be the last record in its list.</offset>
+</offset-table>
+</p>
+</subsection>
+
+<subsection title="Blend Records">
+<p>
+A blend is a computed transition between two keyframe shapes, expressed
+as a Blend Group (0x3A) whose own child_lists (after denormalising)
+contain, in some order, exactly two keyframe lists -- each one a normal
+geometry record (typically a Path or Blend Path, 0x3D, itself
+structurally identical to a Path) plus whatever local style records
+apply to that keyframe -- and one Blend Options list.
+</p>
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x3A" name="values" data-size="44">Eleven signed words, unconfirmed purpose.</offset>
+<offset number="0x3B" name="unknown_24, blend_steps, values" data-size="4 + 4 + 32">One unknown signed word, then blend_steps (a signed word: the number of computed intermediate steps between the two keyframes), then eight further unknown signed words. Must be the last record in its list.</offset>
+</offset-table>
+</p>
+<p>
+Intermediate (blended) geometry and colour are never stored on disk --
+confirmed by checking real blend documents' own two keyframes, which
+always reference either a named palette colour or another blend
+keyframe directly, never anything resembling a computed intermediate
+value. A renderer must compute each intermediate step itself: geometry
+by pairing up each keyframe path's own elements positionally (only
+possible when both keyframes have the same element count and matching
+segment types at each position -- otherwise there is no well-defined
+correspondence, and a renderer must fall back to some other
+approximation, such as drawing both keyframes as-is), and colour by
+linear interpolation in RGB space (confirmed against
+<userinput>riscos-artworks-js</userinput>'s own research notes on this format,
+which describe blended colours as "appear[ing] to be linearly
+interpolated in RGB space").
+</p>
+</subsection>
+
+<subsection title="Distortion and Perspective Groups">
+<p>
+<offset-table head-number="Record" head-name="Fields" head-value="Contents">
+<offset number="0x37" name="envelope, unknown_values, original_objects_bounding_box" data-size="variable">For the last record in its list: no body at all (envelope is absent). Otherwise: a path (the distortion envelope's own shape), nine further unknown words, then a bounding box (16 bytes) recording the grouped objects' own original, pre-distortion extent.</offset>
+<offset number="0x38" name="envelope, unknown_values, original_objects_bounding_box" data-size="variable">Structurally identical to 0x37, except thirteen (not nine) unknown words follow the envelope path.</offset>
+<offset number="0x42" name="(none)">No body. A distortion subgroup marker within a 0x37/0x38 group's own content; purpose not otherwise confirmed beyond its presence.</offset>
+</offset-table>
+</p>
+<p>
+Neither the envelope distortion (0x37) nor the perspective distortion
+(0x38) is actually applied to the grouped content by any renderer built
+on this package so far -- the group's own content is recursed into and
+drawn structurally undistorted. This is a known, documented rendering
+gap, not a decoding one: the envelope/distortion parameters themselves
+are decoded as described above, they are simply not yet interpreted
+into an actual coordinate transform.
+</p>
+</subsection>
+
+<subsection title="Unrecognised and Placeholder Records">
+<p>
+Type codes 0x00 and 0x22 decode to an empty record with no body of
+their own. Type 0x2E decodes a fixed structure (one unknown word, an
+8-byte fixed string, a 24-byte fixed string, and two further signed
+words) whose purpose is not otherwise confirmed; it must be the last
+record in its list. Types 0x31, 0x32, and 0x33 decode a fixed number of
+otherwise-uninterpreted words (four, one, and six respectively; 0x32
+must be the last record in its list). Any type code not listed in
+"Record Types" above decodes as a generic UnknownRecord.
+</p>
+</subsection>
+</section>
+
+<section title="Colour Encoding">
+<p>
+ArtWorks has two distinct colour representations: an indexed
+<em>palette</em>, giving the document's own named colours, and a
+compact <em>colour reference</em> word used throughout the record body
+to point at one -- or, in one further case, to carry a complete colour
+directly with no palette involvement at all.
+</p>
+
+<subsection title="Palette Structure">
+<p>
+When present (header <userinput>palette_offset</userinput> &gt;= 0), the palette
+begins with two header words followed by that many
+<userinput>PaletteEntry</userinput> records, each 48 bytes:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-3" name="count_word" data-size="4">Despite its naming and position, this is <em>not</em> the palette's own real entry count -- see below. Its own true meaning is unconfirmed, though it appears to read consistently larger than the real count in every file where the two differ, suggesting an allocated capacity or a high-water mark across undo history that ArtWorks does not shrink back down. Retained verbatim for any caller that specifically wants the raw on-disk word.</offset>
+<offset number="4-7" name="control_word" data-size="4">The palette's own real, live entry count (low 24 bits). Confirmed against two real files, both created by dragging a DrawFile into ArtWorks: one where count_word read 49 but only 18 entries were genuinely populated (control_word read 18 correctly; the word immediately after the 18th real entry decoded as "&lt;Nothing&gt;"/"Redo", ArtWorks' own undo-stack labels, with several further entries decoding as readable Print_* preferences text -- unambiguous evidence of reading into unrelated later file content), and one where count_word read 81 against 72 real entries (control_word again correct). In every file where count_word and control_word happen to agree, trusting control_word is a no-op.</offset>
+<offset number="8.." name="entries" data-size="48 * count">That many PaletteEntry records, described next.</offset>
+</offset-table>
+</p>
+<p>
+Each 48-byte PaletteEntry:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-23" name="name" data-size="24">A fixed 24-byte field: the colour's own name (e.g. "Black", "90% Black", or an auto-generated name for a colour created without one), NUL-terminated/padded.</offset>
+<offset number="24-27" name="colour" data-size="4">A pre-resolved RGB preview of this entry's own colour, already correctly computed by ArtWorks itself regardless of the entry's own colour_model (see below) -- bits 0-7 red, bits 8-15 green, bits 16-23 blue, top byte a fixed &amp;20 tag not otherwise meaningful. A renderer needing this entry's own displayable colour should use this field directly rather than re-deriving it from the raw component_0..3 fields, which is unnecessary and, for anything other than the CMYK case, unconfirmed (see below).</offset>
+<offset number="28-31" name="component_0" data-size="4">First raw colour component, scaled 0 to 2147483647 (0x7FFFFFFF, the full 31-bit range) representing 0% to 100% of that component -- meaning depends on colour_model (see below).</offset>
+<offset number="32-35" name="component_1" data-size="4">Second raw colour component, same scaling as component_0.</offset>
+<offset number="36-39" name="component_2" data-size="4">Third raw colour component, same scaling as component_0.</offset>
+<offset number="40-43" name="component_3" data-size="4">Fourth raw colour component, same scaling as component_0.</offset>
+<offset number="44-47" name="flags" data-size="4">Low 2 bits: colour_model (0 = RGB, 1 = CMYK, 2 = HSV, 3 = "non-interpolating RGB" -- a variant whose distinction from plain RGB is not otherwise confirmed). Remaining bits unconfirmed.</offset>
+</offset-table>
+</p>
+<p>
+Only the CMYK case (colour_model = 1) has been independently confirmed
+component-by-component: each of component_0 through component_3 (in
+that order, C/M/Y/K) divided by 2147483647 and multiplied by 100 matches
+a real document's own declared CMYK percentage to 8 or more significant
+figures, checked against two real files each named after their own
+exact CMYK values (e.g. a palette entry named "DGreen" with
+component_0..3 giving exactly 64/26/75/45% against a
+<userinput>TextCMYK64,26,75,45_Process,d94</userinput> filename). RGB, HSV, and
+non-interpolating-RGB component scaling/ordering are not independently
+confirmed; a renderer needing a resolved colour for any colour_model
+should prefer the pre-baked <userinput>colour</userinput> preview field above,
+which is already correct for every model.
+</p>
+</subsection>
+
+<subsection title="Colour References">
+<p>
+Throughout the record body (stroke/fill colour fields, gradient
+endpoints), a colour is referenced by one 32-bit word, interpreted by
+range:
+</p>
+<p>
+<value-table head-number="Value range" head-value="Meaning">
+<value number="0x00000000 - 0x00FFFFFF">A palette index: entries[value].colour is the resolved preview colour (see "Palette Structure"). Realistically bounded by the palette's own size, never anywhere near this range's own full extent.</value>
+<value number="0x01000000 - 0xFFFFFFFD">A "direct" colour: a self-contained CMYK value needing no palette lookup at all (see "Direct Colour Encoding" below). ArtWorks writes one of these instead of a palette index when a colour has no palette entry of its own -- e.g. a colour picked without being added to the palette, a colour inherited from a DrawFile-to-ArtWorks drag-conversion, or (in a renderer's own internal use, not on-disk data) a computed/blended intermediate colour.</value>
+<value number="0xFFFFFFFE">"Registration Black" (RISC OS kernel constant Colour_RegBlack = -2, confirmed against !TopCode/Binds/TopBinds.bas) -- a print-production sentinel meaning "solid ink on every separation plate", not a literal colour despite falling inside the "direct colour" range above. Resolves to solid black for any display purpose. Confirmed against a real file (a StrokeColourRecord set to this exact value, in a document named to describe its own intended on-screen appearance) and against Paths/PathFill.bas's own "'None' and RegistrationBlack are absolutely disallowed [as a graduated-fill colour]" comment.</value>
+<value number="0xFFFFFFFF">"None" (Colour_None = -1): fully transparent/no colour.</value>
+</value-table>
+</p>
+
+<subsubsection title="Direct Colour Encoding">
+<p>
+A direct colour's four bytes, least significant to most significant,
+are K, C, M, Y -- each 0-255, a completely different scaling from a
+PaletteEntry's own 31-bit-range component words above -- decoded via a
+standard subtractive CMYK-to-RGB conversion:
+</p>
+<p>
+<extended-example type='pseudo'>
+k = value &amp; 0xFF
+c = (value &gt;&gt; 8) &amp; 0xFF
+m = (value &gt;&gt; 16) &amp; 0xFF
+y = (value &gt;&gt; 24) &amp; 0xFF
+ink = 1 - k / 255
+r = round(255 * (1 - c / 255) * ink)
+g = round(255 * (1 - m / 255) * ink)
+b = round(255 * (1 - y / 255) * ink)
+</extended-example>
+</p>
+<p>
+Confirmed against two independent real examples, both cross-checked
+against the real document's own colour-picker dialog: a shape's own
+fill, <userinput>0xFFFF9C00</userinput> (dialog-reported 59.8/99.6/99.2/0% CMYK;
+this decoding gives 61.2/100/100/0%), and a background rectangle in the
+same document, <userinput>0xFFFF9900</userinput> (dialog-reported RGB
+40.2/0.4/0.8%, i.e. (102,1,2); this decoding gives exactly (102,0,0)) --
+both within the rounding of a percentage read to one decimal place.
+</p>
+<p>
+This byte order also explains why the plain value-range test above (top
+byte non-zero) is the correct "is this a direct colour, not an index"
+test: a document realistically never has anywhere near 16 million
+palette entries, so any real index naturally keeps its own top byte
+zero, while this is simply testing whether the Y (top) byte is
+non-zero. The one case this can't distinguish from an index is a direct
+colour needing precisely zero ink on every channel that determines the
+top byte -- most notably pure white, which needs C, M, and Y (and K)
+all at zero, always leaving the top byte zero too. Not yet seen in a
+real file, and not otherwise resolvable without a second signal this
+format doesn't seem to carry; a colour genuinely needing this is
+presumably always given a palette entry instead.
+</p>
+</subsubsection>
+</subsection>
+</section>
+
+<section title="Unresolved and Undocumented Areas">
+<p>
+The following remain genuinely unknown or only inferred, listed here so
+a reader attempting a fuller implementation knows exactly what remains
+to be determined:
+</p>
+<p>
+<list type="unordered">
+<item>Header offsets 16-19, 32-39, and 64-91 (seven words): entirely
+unknown.</item>
+<item>european_paper_width/height (header offsets 24-31): inferred from
+context and cross-checked against A4's own point size, but not
+confirmed to the same precision as american_paper_width/height.</item>
+<item>The undo buffer and header-level sprite area's own internal
+structure: exposed as raw byte ranges only, not decoded.</item>
+<item>Most "unknown_values"/"values" fields throughout "Record Types" --
+particularly the Sprite record's own 16-word values block, the Group
+record's three words, the Blend Group's eleven words, and both
+Distortion/Perspective group's own unknown words.</item>
+<item>A genuinely palette-less sprite's own extra field (resembling a
+mask colour name) preceding its palette-count word -- worked around by
+degrading to "no palette" on an implausible count, rather than modelled
+directly.</item>
+<item>Envelope distortion (0x37) and perspective distortion (0x38) are
+decoded structurally but not applied by any renderer built on this
+package so far.</item>
+<item>RGB, HSV, and "non-interpolating RGB" PaletteEntry component
+scaling/ordering (colour_model 0, 2, 3) -- only CMYK (colour_model 1)
+is independently confirmed; see "Palette Structure".</item>
+<item>A direct colour needing zero ink on every channel (see "Direct
+Colour Encoding") cannot be distinguished from a palette index under
+the confirmed encoding -- not yet observed in a real file.</item>
+</list>
+</p>
+</section>
+
+</chapter>
+
+<!-- MetaData -->
+<meta>
+ <maintainer>
+  <email name="Charles Ferguson" address="gerph@gerph.org" />
+ </maintainer>
+ <disclaimer>
+    <p>
+        &copy; Charles Ferguson, 2026. ArtWorks is a trademark of its
+        respective owners; this document is an independent, unofficial
+        reconstruction of its file format, not a specification released
+        by the format's original authors.
+    </p>
+ </disclaimer>
+
+ <history>
+  <revision number="1" author="Charles Ferguson" date="19 Aug 2026" title="Initial version">
+    <change>Consolidated the ArtWorks file format knowledge gathered while
+    building the riscos_artworks decoder and its riscos-impression
+    ArtWorks-to-SVG/PDF converter: file header, record list/record tree
+    structure and the denormalise() transform, every record type's own
+    body layout, path element encoding, sprite embedding and shared
+    native sprite area layout, and colour encoding (palette structure,
+    the count_word/control_word fix, and direct-colour K/C/M/Y CMYK
+    decoding).</change>
+  </revision>
+ </history>
+</meta>
+</riscos-prm>
