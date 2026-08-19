@@ -87,7 +87,11 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(artwork.resolve_colour(0), 0x00332211)
         self.assertEqual(artwork.resolve_colour(0xFFFFFFFF), None)
         self.assertEqual(ColourIndex(0x00332211).bgr, None)
-        self.assertEqual(ColourIndex(0x01332211).bgr, (0x33, 0x22, 0x11))
+        # A direct colour's bytes (LSB to MSB) are K, C, M, Y, decoded
+        # via a standard CMYK->RGB conversion -- see ColourIndex's own
+        # docstring for how this was confirmed against two real files.
+        # For 0x01332211: K=0x11, C=0x22, M=0x33, Y=0x01.
+        self.assertEqual(ColourIndex(0x01332211).bgr, (206, 190, 237))
         # "Registration Black" (Colour_RegBlack = -2, i.e. 0xFFFFFFFE)
         # is a print-production sentinel, not a literal direct colour,
         # even though it satisfies the same >= 0x01000000 test a real
@@ -103,6 +107,19 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(artwork.palette.entries[0].colour_model_value, 1)  # type: ignore[union-attr]
         self.assertEqual(artwork.palette_entry(0).name.text, "Red")  # type: ignore[union-attr]
         self.assertIsNone(artwork.palette_entry(-1))
+
+    def test_direct_colour_decodes_kcmy_bytes_as_cmyk(self) -> None:
+        # Two independent real examples, both checked against the real
+        # document's own colour-picker dialog: a document's "SVG logo"
+        # shape (0xFFFF9C00, target 59.8/99.6/99.2/0% CMYK) and, later,
+        # a background rectangle in the same document
+        # (0xFFFF9900, target RGB 40.2/0.4/0.8%, i.e. (102, 1, 2)).
+        # Both are reproduced (within rounding of the dialog's own
+        # 1-decimal-place percentages) by reading the value's four
+        # bytes, LSB to MSB, as K, C, M, Y (0-255 each) through a
+        # standard CMYK->RGB conversion.
+        self.assertEqual(ColourIndex(0xFFFF9C00).bgr, (99, 0, 0))
+        self.assertEqual(ColourIndex(0xFFFF9900).bgr, (102, 0, 0))
 
     def test_sprite_record_with_a_palette_reads_its_own_entries(self) -> None:
         # The word immediately after "values" is the palette's own
