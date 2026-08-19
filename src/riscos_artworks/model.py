@@ -412,10 +412,21 @@ class PathRecord(Record):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SpriteRecord(Record):
+    """An embedded sprite's own ArtWorks metadata (name and indexed
+    palette). ArtWorks stores the actual pixel data for one or more
+    sibling SpriteRecords together, once, in a single shared RISC
+    OS-format sprite area placed after all of their own metadata blocks
+    -- `data` is resolved by matching this record's own name against
+    that shared area during decoding (b"" if no match was found), and is
+    already a single native sprite record with any area wrapper
+    stripped, matching the convention DrawFile.DrawSprite.data uses in
+    riscos-impression."""
+
     unknown_24: int
     name: DecodedString
     unknown_values: tuple[int, ...]
     palette: tuple[int, ...]
+    data: bytes
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

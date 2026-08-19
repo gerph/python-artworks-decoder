@@ -122,6 +122,33 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         sprite = next(artwork.walk(SpriteRecord))
         self.assertEqual(sprite.name.text, "HasPal")
         self.assertEqual(sprite.palette, (0x11223344, 0x55667788))
+        self.assertEqual(sprite.data, b"")
+
+    def test_sprite_record_data_is_resolved_from_its_own_shared_native_area(self) -> None:
+        # ArtWorks stores the actual pixel data for one or more sibling
+        # SpriteRecords together, once, in a single shared RISC
+        # OS-format sprite area placed after all of their own metadata
+        # blocks -- confirmed empirically against 5 real files
+        # (AWDocs/TestDocs/Sprite1BPP-lefthandwastae,d94,
+        # Sprite2BPP-lefthandwastage,d94,
+        # Sprite4BPP-lethandwastage,d94, SpriteManyFlame,d94 -- 8
+        # sprites sharing one area, and SpritesLots,d94 -- 23 sprites
+        # sharing one). Rather than assume any fixed gap, the decoder
+        # scans forward for the area's own [size, count, 16, size]
+        # header and walks its native sprite chain matching by name.
+        one_length = 4 + 12 + 28  # next_offset + name + 7 fixed words
+        sprite_one = (struct.pack("<I", one_length) + b"One\0\0\0\0\0\0\0\0\0" +
+                     struct.pack("<7i", 0, 0, 0, 0, 0, 0, 0))
+        sprite_two = (struct.pack("<I", 0) + b"Two\0\0\0\0\0\0\0\0\0" +
+                     struct.pack("<7i", 0, 0, 0, 0, 0, 0, 0))
+        area_size = 16 + len(sprite_one) + len(sprite_two)
+        area = struct.pack("<4I", area_size, 2, 16, area_size) + sprite_one + sprite_two
+        body = (struct.pack("<I", 1) + b"Two\0" + b"x" * 8 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 0) + area)
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "Two")
+        self.assertEqual(sprite.data, sprite_two)
 
     def test_sprite_record_with_an_implausible_count_degrades_to_no_palette(self) -> None:
         # Regression test: a real ArtWorks picture (an "SVG" logo,
@@ -142,6 +169,7 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         sprite = next(artwork.walk(SpriteRecord))
         self.assertEqual(sprite.name.text, "NoPal")
         self.assertEqual(sprite.palette, ())
+        self.assertEqual(sprite.data, b"")
 
     def test_every_reference_record_body_has_a_typed_decoder(self) -> None:
         end_path = struct.pack("<I", 0)

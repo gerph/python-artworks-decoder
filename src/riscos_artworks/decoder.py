@@ -282,6 +282,58 @@ class _Decoder:
                 child_tasks.append((sub_offset + sub_pointer.next, draft.child_lists))
             offset += pointer.next
 
+    def _find_sprite_data(self, data: bytes, start: int, name: str) -> bytes:
+        # ArtWorks stores the pixel data for one or more SpriteRecords
+        # together, once, in a single shared RISC OS-format sprite area
+        # (a standard [size, count, first_offset, size] control block)
+        # placed after all of their own metadata blocks -- confirmed
+        # empirically against 5 real files (AWDocs/TestDocs/
+        # Sprite1BPP-lefthandwastae,d94, Sprite2BPP-lefthandwastage,d94,
+        # Sprite4BPP-lethandwastage,d94, SpriteManyFlame,d94 -- 8 sprites
+        # sharing one area, and SpritesLots,d94 -- 23 sprites sharing
+        # one). Rather than assume a fixed byte gap before that area
+        # (observed to vary, 48-56 bytes, across the single-sprite
+        # examples, for reasons not otherwise modelled here), scan
+        # forward for the area's own header directly and, once found,
+        # walk its native sprite chain matching this record's own name
+        # -- every SpriteRecord that shares an area independently finds
+        # the same one this way, with no need to track sibling grouping.
+        target = name.strip()
+        if not target:
+            return b""
+        n = len(data)
+        pos = start
+        while pos + 16 <= n:
+            size, count, first_offset, size_repeat = struct.unpack_from("<4I", data, pos)
+            if (first_offset == 16 and size == size_repeat and 16 < size
+                    and 1 <= count <= MAX_COLLECTION_SIZE and pos + size <= n):
+                found = self._match_sprite_in_area(data, pos, size, count, target)
+                if found is not None:
+                    return found
+            pos += 4
+        return b""
+
+    def _match_sprite_in_area(self, data: bytes, area_start: int, area_size: int,
+                              count: int, target: str) -> bytes | None:
+        area_end = area_start + area_size
+        pos = area_start + 16
+        for _ in range(count):
+            if pos + 16 > area_end:
+                return None
+            next_offset = struct.unpack_from("<I", data, pos)[0]
+            raw_name = data[pos + 4:pos + 16]
+            nul = raw_name.find(b"\0")
+            sprite_name = (raw_name if nul < 0 else raw_name[:nul]).decode("latin-1")
+            sprite_end = area_end if next_offset == 0 else pos + next_offset
+            if sprite_end <= pos or sprite_end > area_end:
+                return None
+            if sprite_name == target:
+                return data[pos:sprite_end]
+            if next_offset == 0:
+                return None
+            pos = sprite_end
+        return None
+
     def _require_last(self, last: bool, name: str, offset: int) -> None:
         if not last:
             raise InvalidPointerError(f"records follow {name} record", offset)
@@ -338,9 +390,10 @@ class _Decoder:
             if count > MAX_COLLECTION_SIZE or count > (r.limit - r.position) // 4:
                 count = 0
             palette = tuple(r.u32() for _ in range(count))
+            sprite_data = self._find_sprite_data(r.data, r.position, name.text)
             return m.SpriteRecord, {"unknown_24": unknown_24, "name": name,
                                     "unknown_values": values,
-                                    "palette": palette}
+                                    "palette": palette, "data": sprite_data}
         if code == 0x06:
             return m.GroupRecord, {"unknown_values": (r.u32(), r.u32(), r.u32())}
         if code == 0x0A:
