@@ -292,7 +292,11 @@ class PaletteEntry:
 
 @dataclass(frozen=True, slots=True)
 class Palette:
-    """An indexed palette retaining both complete header words."""
+    """An indexed palette retaining both complete header words. Despite
+    its name, count_word is not the palette's own real entry count --
+    see the decoder's own _palette() for why -- and is kept here
+    verbatim only for callers that want the raw on-disk word; use
+    `count` (or `len(entries)`, always identical) for the real count."""
 
     count_word: int
     control_word: int
@@ -301,7 +305,7 @@ class Palette:
 
     @property
     def count(self) -> int:
-        return self.count_word & 0xFFFFFF
+        return len(self.entries)
 
     @property
     def masked_control(self) -> int:

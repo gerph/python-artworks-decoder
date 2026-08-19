@@ -227,9 +227,42 @@ class PrimitiveAndRecordTests(unittest.TestCase):
                 self.assertEqual(len(decoded.unknown_values), count)
                 self.assertIsNotNone(decoded.original_objects_bounding_box)
 
-    def test_malformed_palette_count_is_rejected(self) -> None:
+    def test_palette_count_word_is_ignored_in_favour_of_control_word(self) -> None:
+        # count_word (the first word) is not the palette's own real
+        # entry count -- confirmed against two real files created by
+        # dragging a DrawFile into ArtWorks (AWDocs/TestDocs/
+        # FromDrawfileRGBCircles,d94: count_word=49, control_word=18,
+        # only 18 entries genuinely populated; RO4Bugs,d94: count_word
+        # =81, control_word=72, 72 populated). Trusting count_word here
+        # reads straight past the real palette into unrelated later
+        # file content -- RGBCircles's own entry 18 decodes to
+        # ArtWorks' own undo-stack labels ("<Nothing>", "Redo"), and
+        # entries further in decode as readable Print_* preferences
+        # text. control_word (the second word) is the real, live count
+        # in every file checked, including ones where the two happen
+        # to agree.
         data = header(palette=0x80)
-        data.extend(struct.pack("<II", 0xFFFFFF, 0))
+        entry_a = (b"A\0" + b"\0" * 22)[:24]
+        entry_b = (b"B\0" + b"\0" * 22)[:24]
+        garbage = (b"<Nothing>\0" + b"\0" * 14)[:24]
+        data.extend(struct.pack("<II", 3, 2))  # count_word=3, control_word=2
+        for entry in (entry_a, entry_b, garbage):
+            data.extend(entry)
+            data.extend(struct.pack("<6I", 0, 0, 0, 0, 0, 0))
+        body_offset = (len(data) + 3) & ~3
+        data.extend(b"\0" * (body_offset - len(data)))
+        struct.pack_into("<I", data, 20, body_offset)
+        data.extend(struct.pack("<iiiiII4i", 0, 0, 0, 0, 0x21, 0, 0, 0, 0, 0))
+        artwork = ArtWorks.from_buffer(data)
+        self.assertEqual(artwork.palette.count, 2)  # type: ignore[union-attr]
+        self.assertEqual([e.name.text for e in artwork.palette.entries], ["A", "B"])  # type: ignore[union-attr]
+
+    def test_malformed_palette_count_is_rejected(self) -> None:
+        # control_word (not count_word) is the real entry count -- see
+        # _palette()'s own comment -- so the malformed value belongs
+        # there.
+        data = header(palette=0x80)
+        data.extend(struct.pack("<II", 0, 0xFFFFFF))
         struct.pack_into("<I", data, 20, 0x88)
         data.extend(struct.pack("<iiiiII4i", 0, 0, 0, 0, 0x22, 0, 0, 0, 0, 0))
         with self.assertRaises(Exception):

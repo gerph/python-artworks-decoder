@@ -126,7 +126,26 @@ def _palette(data: bytes, offset: int) -> m.Palette:
     reader = _Reader(data, offset)
     count_word = reader.u32()
     control_word = reader.u32()
-    count = count_word & 0xFFFFFF
+    # The real, live entry count is control_word (the second word), not
+    # count_word (the first) -- confirmed against several real files
+    # (AWDocs/TestDocs/FromDrawfileRGBCircles,d94 and RO4Bugs,d94, both
+    # created by dragging a DrawFile into ArtWorks): count_word reads
+    # larger than the number of genuinely populated entries (49 vs 18,
+    # and 81 vs 72 respectively), with every entry beyond control_word's
+    # own count either uninitialised-looking garbage (RO4Bugs: garbled
+    # names, effectively-random preview colour words) or, read far
+    # enough, literal unrelated later file content (RGBCircles: an
+    # entry at the control_word boundary reads "<Nothing>"/"Redo" --
+    # ArtWorks' own undo-stack labels -- and further entries decode as
+    # readable Print_* preferences text). count_word's own true meaning
+    # isn't confirmed (perhaps an allocated capacity or a high-water
+    # mark across undo history that ArtWorks doesn't shrink back down),
+    # but it reliably overruns into unrelated data when trusted as the
+    # count, so control_word is used instead. In every file checked
+    # where the two happen to agree (e.g.
+    # Sprite16ColourPalettedMasked,d94, PolygonStellated6Sides,d94)
+    # this is a no-op change.
+    count = control_word & 0xFFFFFF
     if count > MAX_COLLECTION_SIZE or count > (len(data) - reader.position) // 48:
         raise TruncatedDataError("palette entry count exceeds available data", offset)
     entries = []
