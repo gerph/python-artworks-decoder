@@ -9,3 +9,5 @@ dist/
 /reports/
 examples/
 riscos-artworks-js/
+/output/
+*-docs.zip

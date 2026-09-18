@@ -11,7 +11,7 @@ from . import model as _model
 from .model import *  # noqa: F403 - the model is the package's public API
 from .denormalise import denormalise
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "ArtWorksDecodeError", "InvalidHeaderError", "InvalidPointerError",

@@ -92,7 +92,8 @@ jobs:
           python -m venv "$RUNNER_TEMP/sdist-test"
           "$RUNNER_TEMP/sdist-test/bin/pip" install dist/*.tar.gz
           "$RUNNER_TEMP/sdist-test/bin/python" -c 'import riscos_artworks; print(riscos_artworks.__version__)'
-          "$RUNNER_TEMP/sdist-test/bin/artworks-audit" --help >/dev/null
+          "$RUNNER_TEMP/sdist-test/bin/riscos-artworks" --version
+          "$RUNNER_TEMP/sdist-test/bin/riscos-artworks" dump --format json "corpus/BlackRect,d94" >/dev/null
 
       - name: Upload Python distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -104,10 +105,47 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  docs:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build PRM-in-XML documentation
+        uses: gerph/riscos-prminxml-action@v1
+        with:
+          files: docs/artworks-fileformat.xml
+          output: output/docs
+          style: prm
+
+      - name: Package documentation
+        id: docsversion
+        shell: bash
+        run: |
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          leafname="riscos-artworks-${package_version}-docs.zip"
+          (cd output/docs && zip -9r "$GITHUB_WORKSPACE/$leafname" *)
+          echo "leafname=$leafname" >> "$GITHUB_OUTPUT"
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: documentation
+          path: ${{ steps.docsversion.outputs.leafname }}
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     name: Create GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
+    needs:
+      - package
+      - docs
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -118,6 +156,12 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: python-distributions
+          path: dist
+
+      - name: Download documentation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: documentation
           path: dist
 
       - name: Create or update the GitHub release

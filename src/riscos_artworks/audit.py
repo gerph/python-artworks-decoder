@@ -335,10 +335,11 @@ def export_summary(connection: sqlite3.Connection, destination: Path,
     return summary
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Audit a tree of possible ArtWorks files into SQLite, CSV, and JSON."))
+DESCRIPTION = "Audit a tree of possible ArtWorks files into SQLite, CSV, and JSON."
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Attach the auditor's arguments to a parser (or subparser)."""
     parser.add_argument("source", nargs="?", type=Path, default=DEFAULT_SOURCE,
                         help="tree to scan (default: /cd/ARTWORKS)")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
@@ -357,6 +358,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true",
                         help="suppress progress messages")
     return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    return add_arguments(argparse.ArgumentParser(description=DESCRIPTION))
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:

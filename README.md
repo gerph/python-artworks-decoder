@@ -89,26 +89,64 @@ python3 -m compileall -q src tests
 
 GitHub Actions tests the installed package on Python 3.11 through 3.14. Once
 those tests pass, every workflow run builds and uploads a source distribution
-and wheel as the `python-distributions` workflow artifact.
+and wheel as the `python-distributions` workflow artifact, and renders the
+PRM-in-XML file format reference in `docs/` as the `documentation` artifact.
 
 Pushing a tag matching `v*` also creates a GitHub release containing those same
-tested distributions. The tag must be `v` followed by the exact version in
-`pyproject.toml`; for example, package version `0.2.0` must be tagged `v0.2.0`.
-Rerunning a tag workflow replaces the release assets without creating a second
-release.
+tested distributions and the documentation archive. The tag must be `v`
+followed by the exact version in `pyproject.toml`; for example, package version
+`0.3.0` must be tagged `v0.3.0`. Rerunning a tag workflow replaces the release
+assets without creating a second release.
+
+The GitLab pipeline (`.gitlab-ci.yml`) runs the same tests, then uses the
+`Makefile` to build a wheel and a Debian package (`make package`) and the
+documentation archive (`make docs`), publishing all three to Artifactory from
+`master`. Versions are derived from `project.config` by `ci-vars`.
 
 An optional private-corpus test is enabled by pointing `ARTWORKS_EXAMPLES` at a
 directory of ArtWorks files. No sample documents or JavaScript reference files
 are included in the distribution.
 
-## Auditing a collection
+## Command line
 
-The collection auditor recursively scans `/cd/ARTWORKS` by default. It writes a
-SQLite database as it runs, checkpointing regularly, and exports deterministic
-CSV coverage data plus an aggregate JSON summary:
+Installing the package provides a `riscos-artworks` command with two
+subcommands, `dump` and `audit`. From a source checkout the same command is
+available as `python3 scripts/riscos_artworks_cli.py`.
+
+### Dumping a file
+
+`riscos-artworks dump FILE` decodes one ArtWorks file and displays it as an
+indented text tree: the interpreted header, the palette, any retained work
+areas, and then every record list with its records, each record's own fields,
+and its child lists nested beneath it:
 
 ```console
-python3 scripts/audit_artworks.py
+riscos-artworks dump drawing,d94
+riscos-artworks dump --no-header drawing,d94
+```
+
+`--format json` writes the same structure as JSON instead. Every dataclass
+becomes an object carrying its class name under `"class"` (records also carry
+their `"record_type"` name, or `null` for unknown types), byte strings become
+hex strings, and enumerations become their raw integer values, so the output
+is a complete, machine-readable image of the decoded structure:
+
+```console
+riscos-artworks dump --format json drawing,d94 > drawing.json
+```
+
+`--no-header` omits the decoded header fields in either format. A file that
+does not decode is reported on standard error with exit status 2.
+
+### Auditing a collection
+
+`riscos-artworks audit` recursively scans `/cd/ARTWORKS` by default. It writes
+a SQLite database as it runs, checkpointing regularly, and exports
+deterministic CSV coverage data plus an aggregate JSON summary:
+
+```console
+riscos-artworks audit
+riscos-artworks audit /path/to/collection --output reports/collection
 ```
 
 The default outputs are `reports/artworks-audit.sqlite3`,

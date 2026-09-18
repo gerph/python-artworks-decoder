@@ -1,0 +1,82 @@
+stages:
+  - test
+  - package
+  - docs
+  - publish
+
+variables:
+  LC_ALL: C.UTF-8
+  GIT_DEPTH: "0"
+
+test:
+  stage: test
+  tags:
+    - robe
+  script:
+    - PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest discover -s tests -v
+    - python3 -m compileall -q src scripts tests
+
+package:
+  stage: package
+  tags:
+    - robe
+  script:
+    - python3 -m pip install --disable-pip-version-check --target /tmp/pypa-build build
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      PYTHONPATH="/tmp/pypa-build${PYTHONPATH:+:$PYTHONPATH}" \
+        make package VERSION="$CI_PROJECT_VERSION"
+      package_file="dist/riscos-artworks_${CI_PROJECT_VERSION}_all.deb"
+      wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+      test -f "$package_file"
+      test -n "$wheel_file"
+  artifacts:
+    name: "riscos-artworks-$CI_COMMIT_REF_SLUG"
+    paths:
+      - dist/*.deb
+      - dist/*.whl
+    expire_in: 1 week
+
+docs:
+  stage: docs
+  tags:
+    - robe
+  script:
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      make docs VERSION="$CI_PROJECT_VERSION"
+      docs_file="riscos-artworks-${CI_PROJECT_VERSION}-docs.zip"
+      test -f "$docs_file"
+  artifacts:
+    name: "riscos-artworks-docs-$CI_COMMIT_REF_SLUG"
+    paths:
+      - "*-docs.zip"
+    expire_in: 1 week
+
+publish:
+  stage: publish
+  tags:
+    - robe
+  dependencies:
+    - package
+    - docs
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+  script:
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      package_file="dist/riscos-artworks_${CI_PROJECT_VERSION}_all.deb"
+      wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+      docs_file="riscos-artworks-${CI_PROJECT_VERSION}-docs.zip"
+      test -f "$package_file"
+      test -n "$wheel_file"
+      test -f "$docs_file"
+      for file in "$package_file" "$wheel_file" "$docs_file"; do
+        curl --fail --silent --show-error \
+          --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
+          --upload-file "$file" \
+          "${ARTIFACTORY_URL}${ARTIFACTORY_REPO}/build/cross/riscos-artworks/$(basename "$file")"
+      done
