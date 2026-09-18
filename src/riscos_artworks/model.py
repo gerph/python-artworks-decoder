@@ -139,6 +139,14 @@ class RelativePointer:
 
 @dataclass(frozen=True, slots=True)
 class Point:
+    """A coordinate in ArtWorks' own native integer units -- Y-up, like
+    RISC OS Draw, not Y-down. This decoder does no unit conversion of
+    its own (structural only), but for a consumer that needs one:
+    riscos-artworks-js's own reference SVG mapper scales by
+    ARTWORKS_UNITS_TO_USER_UNITS = (1/640) * (4/3) to reach the same
+    "user unit" a Draw file's own 1/640-scaled coordinate reaches --
+    i.e. one ArtWorks unit is 4/3 of a Draw unit (1/(180*256) inch)."""
+
     x: int
     y: int
 
@@ -160,6 +168,19 @@ class DecodedString:
 
 @dataclass(frozen=True, slots=True)
 class PathElement:
+    """One opcode of a path, in ArtWorks' own on-disk order (Move/Line/
+    Bezier/Close/End; a masked_tag byte matching RISC OS Draw's own
+    path-tag numbering: 0 end, 2 move, 5 close, 6 Bezier, 8 line).
+
+    Rendering note (not enforced or interpreted by this decoder, which
+    stays purely structural, but confirmed against a real ArtWorks
+    file and cross-checked against riscos-artworks-js's own reference
+    SVG mapper, which relies on it): bit 31 of the *first* element's
+    own tag in a path (i.e. `path[0].flags & (1 << 31)`) is that path's
+    own "is filled" flag, independent of whatever fill colour a
+    preceding FillColourRecord may have set in scope -- a path drawn
+    with this bit clear is stroked only, regardless of fill state."""
+
     tag: int
 
     @property
@@ -208,7 +229,20 @@ Path = tuple[PathElement, ...]
 
 @dataclass(frozen=True, slots=True)
 class ColourIndex:
-    """A raw indexed, direct-BGR, or transparent colour reference."""
+    """A raw indexed, direct-BGR, or transparent colour reference.
+
+    A direct value's own colour channels sit at fixed bit offsets
+    confirmed against a real file and cross-checked against
+    riscos-artworks-js's own reference colour mapping: red in bits
+    0-7, green in bits 8-15, blue in bits 16-23 (`bgr`, named for the
+    tuple order it returns them in, exposes exactly these three
+    bytes). Bits 24-31 are not a colour channel; they were observed
+    non-zero on real, otherwise-ordinary direct/resolved colour values
+    (e.g. 0x20 on many CMYK-model palette entries' own already-resolved
+    `PaletteEntry.colour`) without affecting how riscos-artworks-js's
+    own reference renderer treats the colour, so a consumer resolving
+    a colour to RGB should mask to the low 24 bits rather than
+    treating the top byte as significant."""
 
     value: int
 
@@ -326,7 +360,40 @@ class ArtWorksHeader:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Record:
-    """Fields shared by every linked ArtWorks record."""
+    """Fields shared by every linked ArtWorks record.
+
+    Rendering notes (not enforced or interpreted by this decoder,
+    which stays purely structural -- confirmed against a real ArtWorks
+    file, cross-checked against riscos-artworks-js's own reference SVG
+    mapper, and directly relevant to anyone walking `child_lists`
+    themselves to build a renderer):
+
+    * Bit 1 of `control_word` is that record's own "visible" flag; a
+      record with this bit clear should not be drawn.
+    * A style-setting record (stroke colour/width, fill colour, join
+      style, start/end line cap, winding rule, dash pattern) is a
+      *sibling* within the same RecordList that mutates state for
+      whichever siblings follow it in file order -- it is never a
+      child of the single object it styles. Descending into a
+      record's own `child_lists` (a group, a layer, or a drawn
+      object's own nested attribute overrides) should carry the
+      *current* style state in with it, and must not leak whatever
+      that nested scope changes back out to the parent's own later
+      siblings once the child_lists finish. Where a `child_lists`
+      tuple holds more than one RecordList (e.g. a layer with several
+      separate sub-lists), that carried-in style state is shared and
+      mutated across *all* of those sibling lists, not reset between
+      them -- confirmed the hard way: real files commonly open with a
+      run of single-record top-level lists, one default style
+      attribute per list, immediately ahead of the list holding the
+      actual content; resetting per list discards every one of those
+      defaults before the content list is ever reached.
+    * A BlendPathRecord (a blend's own start/end keyframe shape) is
+      typically marked not visible via its own `control_word`, even
+      though it carries a normal `path`: a correct renderer is
+      expected to synthesise the *interpolated* in-between shapes
+      (per BlendOptionsRecord.blend_steps) rather than draw the
+      keyframes themselves."""
 
     type_word: int
     type_code: int
