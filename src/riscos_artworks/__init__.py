@@ -9,11 +9,13 @@ from .exceptions import (
 )
 from . import model as _model
 from .model import *  # noqa: F403 - the model is the package's public API
+from .denormalise import denormalise
 
 __version__ = "0.2.0"
 
 __all__ = [
     "ArtWorksDecodeError", "InvalidHeaderError", "InvalidPointerError",
     "TruncatedDataError", "UnsupportedValueError", "__version__",
+    "denormalise",
     *_model.__all__,
 ]

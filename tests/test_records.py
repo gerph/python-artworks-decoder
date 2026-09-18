@@ -10,6 +10,7 @@ from riscos_artworks import (
     EndElement,
     FillColourRecord,
     JoinStyleRecord,
+    JpegRecord,
     LineElement,
     MoveElement,
     PathRecord,
@@ -17,6 +18,7 @@ from riscos_artworks import (
     UnknownPathElement,
     Record00Record,
     Record22Record,
+    SpriteRecord,
 )
 
 from fixtures import bounded_record, header, path, record
@@ -86,16 +88,139 @@ class PrimitiveAndRecordTests(unittest.TestCase):
         self.assertEqual(artwork.resolve_colour(0), 0x00332211)
         self.assertEqual(artwork.resolve_colour(0xFFFFFFFF), None)
         self.assertEqual(ColourIndex(0x00332211).bgr, None)
-        self.assertEqual(ColourIndex(0x01332211).bgr, (0x33, 0x22, 0x11))
+        # A direct colour's bytes (LSB to MSB) are K, C, M, Y, decoded
+        # via a standard CMYK->RGB conversion -- see ColourIndex's own
+        # docstring for how this was confirmed against two real files.
+        # For 0x01332211: K=0x11, C=0x22, M=0x33, Y=0x01.
+        self.assertEqual(ColourIndex(0x01332211).bgr, (206, 190, 237))
+        # "Registration Black" (Colour_RegBlack = -2, i.e. 0xFFFFFFFE)
+        # is a print-production sentinel, not a literal direct colour,
+        # even though it satisfies the same >= 0x01000000 test a real
+        # direct colour does -- resolves to solid black, not the
+        # near-white a naive BGR-bit extraction would give (confirmed
+        # against !TopCode/Binds/TopBinds.bas's own Colour_RegBlack
+        # constant and a real file, TestDocs/RegistrationBlackRect,d94).
+        self.assertFalse(ColourIndex(0xFFFFFFFE).is_direct)
+        self.assertTrue(ColourIndex(0xFFFFFFFE).is_registration_black)
+        self.assertEqual(ColourIndex(0xFFFFFFFE).bgr, (0, 0, 0))
+        self.assertEqual(artwork.resolve_colour(0xFFFFFFFE), 0x00000000)
+        self.assertEqual(artwork.palette.resolve(0xFFFFFFFE), 0x00000000)  # type: ignore[union-attr]
         self.assertEqual(artwork.palette.entries[0].colour_model_value, 1)  # type: ignore[union-attr]
         self.assertEqual(artwork.palette_entry(0).name.text, "Red")  # type: ignore[union-attr]
         self.assertIsNone(artwork.palette_entry(-1))
+
+    def test_direct_colour_decodes_kcmy_bytes_as_cmyk(self) -> None:
+        # Two independent real examples, both checked against the real
+        # document's own colour-picker dialog: a document's "SVG logo"
+        # shape (0xFFFF9C00, target 59.8/99.6/99.2/0% CMYK) and, later,
+        # a background rectangle in the same document
+        # (0xFFFF9900, target RGB 40.2/0.4/0.8%, i.e. (102, 1, 2)).
+        # Both are reproduced (within rounding of the dialog's own
+        # 1-decimal-place percentages) by reading the value's four
+        # bytes, LSB to MSB, as K, C, M, Y (0-255 each) through a
+        # standard CMYK->RGB conversion.
+        self.assertEqual(ColourIndex(0xFFFF9C00).bgr, (99, 0, 0))
+        self.assertEqual(ColourIndex(0xFFFF9900).bgr, (102, 0, 0))
+
+    def test_jpeg_record_decodes_its_own_embedded_jpeg_bytes(self) -> None:
+        # Confirmed against a real file (AWDocs/TestDocs/JPEG,d94):
+        # pixel_width/pixel_height and dpi_x/dpi_y both match values
+        # independently decoded straight from a real embedded JPEG's
+        # own SOF0 and JFIF APP0 markers -- see the decoder's own
+        # comment for the full story, including how an earlier version
+        # of this fix had every field one word out of position.
+        fake_jpeg = b"\xff\xd8\xff\xe0FAKEJPEGBYTES\xff\xd9"
+        body = (
+            struct.pack("<I", 0) +  # unknown_24
+            struct.pack("<II", 192, 74) +  # pixel_width, pixel_height
+            struct.pack("<II", 90, 90) +  # dpi_x, dpi_y
+            struct.pack("<6i", 46848, 69376, 145152, 69376, 145152, 107264) +  # corner
+            struct.pack("<6i", 0x10000, 0, 0, 0x10000, 46848, 69376) +  # matrix
+            struct.pack("<I", len(fake_jpeg)) +
+            fake_jpeg
+        )
+        artwork = ArtWorks.from_buffer(record(0x6D, body))
+        jpeg = next(artwork.walk(JpegRecord))
+        self.assertEqual((jpeg.pixel_width, jpeg.pixel_height), (192, 74))
+        self.assertEqual((jpeg.dpi_x, jpeg.dpi_y), (90, 90))
+        self.assertEqual(jpeg.data, fake_jpeg)
+
+    def test_sprite_record_with_a_palette_reads_its_own_entries(self) -> None:
+        # The word immediately after "values" is the palette's own
+        # entry count directly, with no separate flag word before it --
+        # confirmed against two real, deliberately contrasting files
+        # (AWDocs/TestDocs/Sprite16ColourPalettedMasked,d94 and
+        # Sprite256ColoursPaletedNoMask,d94): the word there reads
+        # exactly 16 and 256 respectively, each followed immediately by
+        # that many real, sensible-looking palette words (a 16-entry
+        # file starting with a clean 8-step greyscale ramp, for
+        # instance) -- see the decoder's own comment for the fuller
+        # story, including an earlier, wrong version of this fix.
+        body = (struct.pack("<I", 1) + b"HasPal\0" + b"x" * 5 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 2) +
+                struct.pack("<2I", 0x11223344, 0x55667788))
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "HasPal")
+        self.assertEqual(sprite.palette, (0x11223344, 0x55667788))
+        self.assertEqual(sprite.data, b"")
+
+    def test_sprite_record_data_is_resolved_from_its_own_shared_native_area(self) -> None:
+        # ArtWorks stores the actual pixel data for one or more sibling
+        # SpriteRecords together, once, in a single shared RISC
+        # OS-format sprite area placed after all of their own metadata
+        # blocks -- confirmed empirically against 5 real files
+        # (AWDocs/TestDocs/Sprite1BPP-lefthandwastae,d94,
+        # Sprite2BPP-lefthandwastage,d94,
+        # Sprite4BPP-lethandwastage,d94, SpriteManyFlame,d94 -- 8
+        # sprites sharing one area, and SpritesLots,d94 -- 23 sprites
+        # sharing one). Rather than assume any fixed gap, the decoder
+        # scans forward for the area's own [size, count, 16, size]
+        # header and walks its native sprite chain matching by name.
+        one_length = 4 + 12 + 28  # next_offset + name + 7 fixed words
+        sprite_one = (struct.pack("<I", one_length) + b"One\0\0\0\0\0\0\0\0\0" +
+                     struct.pack("<7i", 0, 0, 0, 0, 0, 0, 0))
+        sprite_two = (struct.pack("<I", 0) + b"Two\0\0\0\0\0\0\0\0\0" +
+                     struct.pack("<7i", 0, 0, 0, 0, 0, 0, 0))
+        area_size = 16 + len(sprite_one) + len(sprite_two)
+        area = struct.pack("<4I", area_size, 2, 16, area_size) + sprite_one + sprite_two
+        body = (struct.pack("<I", 1) + b"Two\0" + b"x" * 8 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 0) + area)
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "Two")
+        self.assertEqual(sprite.data, sprite_two)
+
+    def test_sprite_record_with_an_implausible_count_degrades_to_no_palette(self) -> None:
+        # Regression test: a real ArtWorks picture (an "SVG" logo,
+        # confirmed independently via riscos_sprites/riscos-dumpsprites
+        # against the same sprite extracted separately: 32bpp, no
+        # palette at all) raised "sprite palette count exceeds record"
+        # here -- that sprite's own record appears to carry additional
+        # fields (at least one further embedded string resembling a
+        # mask colour name) this decoder doesn't yet model, throwing
+        # off this word's own true position for that case specifically.
+        # Rather than raise (crashing every caller) or guess at that
+        # structure without a confirmed example to check against, an
+        # implausible count here degrades to an empty palette instead --
+        # consistent with the one real case seen so far.
+        body = (struct.pack("<I", 1) + b"NoPal\0" + b"x" * 6 +
+                struct.pack("<16I", *range(16)) + struct.pack("<I", 0xFFFFFFFF))
+        artwork = ArtWorks.from_buffer(record(0x05, body))
+        sprite = next(artwork.walk(SpriteRecord))
+        self.assertEqual(sprite.name.text, "NoPal")
+        self.assertEqual(sprite.palette, ())
+        self.assertEqual(sprite.data, b"")
 
     def test_every_reference_record_body_has_a_typed_decoder(self) -> None:
         end_path = struct.pack("<I", 0)
         fixed8 = b"short\0xx"
         fixed24 = b"long\0" + b"x" * 19
         fixed32 = b"Layer\0" + b"x" * 26
+        # Trailing word is the palette's own entry count (0 = none) --
+        # see test_sprite_record_with_a_palette_reads_its_own_entries
+        # and test_sprite_record_with_an_implausible_count_degrades_to_no_palette
+        # above for the two more interesting cases spelled out explicitly.
         sprite_body = (struct.pack("<I", 1) + b"Sprite\0" + b"x" * 5 +
                        struct.pack("<16I", *range(16)) + struct.pack("<I", 0))
         cases = {
@@ -120,6 +245,10 @@ class PrimitiveAndRecordTests(unittest.TestCase):
             0x3B: struct.pack("<10i", *range(10)), 0x3D: end_path,
             0x3E: struct.pack("<iII", -1, 2, 3),
             0x3F: struct.pack("<iII", -1, 2, 3), 0x42: b"",
+            0x6D: (struct.pack("<I", 0) + struct.pack("<4I", 1, 1, 1, 1) +
+                  struct.pack("<6i", 0, 0, 0, 0, 0, 0) +
+                  struct.pack("<6i", 0x10000, 0, 0, 0x10000, 0, 0) +
+                  struct.pack("<I", 2) + b"\xff\xd8"),
         }
         for code, body in cases.items():
             with self.subTest(code=hex(code)):
@@ -143,9 +272,42 @@ class PrimitiveAndRecordTests(unittest.TestCase):
                 self.assertEqual(len(decoded.unknown_values), count)
                 self.assertIsNotNone(decoded.original_objects_bounding_box)
 
-    def test_malformed_palette_count_is_rejected(self) -> None:
+    def test_palette_count_word_is_ignored_in_favour_of_control_word(self) -> None:
+        # count_word (the first word) is not the palette's own real
+        # entry count -- confirmed against two real files created by
+        # dragging a DrawFile into ArtWorks (AWDocs/TestDocs/
+        # FromDrawfileRGBCircles,d94: count_word=49, control_word=18,
+        # only 18 entries genuinely populated; RO4Bugs,d94: count_word
+        # =81, control_word=72, 72 populated). Trusting count_word here
+        # reads straight past the real palette into unrelated later
+        # file content -- RGBCircles's own entry 18 decodes to
+        # ArtWorks' own undo-stack labels ("<Nothing>", "Redo"), and
+        # entries further in decode as readable Print_* preferences
+        # text. control_word (the second word) is the real, live count
+        # in every file checked, including ones where the two happen
+        # to agree.
         data = header(palette=0x80)
-        data.extend(struct.pack("<II", 0xFFFFFF, 0))
+        entry_a = (b"A\0" + b"\0" * 22)[:24]
+        entry_b = (b"B\0" + b"\0" * 22)[:24]
+        garbage = (b"<Nothing>\0" + b"\0" * 14)[:24]
+        data.extend(struct.pack("<II", 3, 2))  # count_word=3, control_word=2
+        for entry in (entry_a, entry_b, garbage):
+            data.extend(entry)
+            data.extend(struct.pack("<6I", 0, 0, 0, 0, 0, 0))
+        body_offset = (len(data) + 3) & ~3
+        data.extend(b"\0" * (body_offset - len(data)))
+        struct.pack_into("<I", data, 20, body_offset)
+        data.extend(struct.pack("<iiiiII4i", 0, 0, 0, 0, 0x21, 0, 0, 0, 0, 0))
+        artwork = ArtWorks.from_buffer(data)
+        self.assertEqual(artwork.palette.count, 2)  # type: ignore[union-attr]
+        self.assertEqual([e.name.text for e in artwork.palette.entries], ["A", "B"])  # type: ignore[union-attr]
+
+    def test_malformed_palette_count_is_rejected(self) -> None:
+        # control_word (not count_word) is the real entry count -- see
+        # _palette()'s own comment -- so the malformed value belongs
+        # there.
+        data = header(palette=0x80)
+        data.extend(struct.pack("<II", 0, 0xFFFFFF))
         struct.pack_into("<I", data, 20, 0x88)
         data.extend(struct.pack("<iiiiII4i", 0, 0, 0, 0, 0x22, 0, 0, 0, 0, 0))
         with self.assertRaises(Exception):

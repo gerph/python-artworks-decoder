@@ -126,7 +126,26 @@ def _palette(data: bytes, offset: int) -> m.Palette:
     reader = _Reader(data, offset)
     count_word = reader.u32()
     control_word = reader.u32()
-    count = count_word & 0xFFFFFF
+    # The real, live entry count is control_word (the second word), not
+    # count_word (the first) -- confirmed against several real files
+    # (AWDocs/TestDocs/FromDrawfileRGBCircles,d94 and RO4Bugs,d94, both
+    # created by dragging a DrawFile into ArtWorks): count_word reads
+    # larger than the number of genuinely populated entries (49 vs 18,
+    # and 81 vs 72 respectively), with every entry beyond control_word's
+    # own count either uninitialised-looking garbage (RO4Bugs: garbled
+    # names, effectively-random preview colour words) or, read far
+    # enough, literal unrelated later file content (RGBCircles: an
+    # entry at the control_word boundary reads "<Nothing>"/"Redo" --
+    # ArtWorks' own undo-stack labels -- and further entries decode as
+    # readable Print_* preferences text). count_word's own true meaning
+    # isn't confirmed (perhaps an allocated capacity or a high-water
+    # mark across undo history that ArtWorks doesn't shrink back down),
+    # but it reliably overruns into unrelated data when trusted as the
+    # count, so control_word is used instead. In every file checked
+    # where the two happen to agree (e.g.
+    # Sprite16ColourPalettedMasked,d94, PolygonStellated6Sides,d94)
+    # this is a no-op change.
+    count = control_word & 0xFFFFFF
     if count > MAX_COLLECTION_SIZE or count > (len(data) - reader.position) // 48:
         raise TruncatedDataError("palette entry count exceeds available data", offset)
     entries = []
@@ -282,6 +301,58 @@ class _Decoder:
                 child_tasks.append((sub_offset + sub_pointer.next, draft.child_lists))
             offset += pointer.next
 
+    def _find_sprite_data(self, data: bytes, start: int, name: str) -> bytes:
+        # ArtWorks stores the pixel data for one or more SpriteRecords
+        # together, once, in a single shared RISC OS-format sprite area
+        # (a standard [size, count, first_offset, size] control block)
+        # placed after all of their own metadata blocks -- confirmed
+        # empirically against 5 real files (AWDocs/TestDocs/
+        # Sprite1BPP-lefthandwastae,d94, Sprite2BPP-lefthandwastage,d94,
+        # Sprite4BPP-lethandwastage,d94, SpriteManyFlame,d94 -- 8 sprites
+        # sharing one area, and SpritesLots,d94 -- 23 sprites sharing
+        # one). Rather than assume a fixed byte gap before that area
+        # (observed to vary, 48-56 bytes, across the single-sprite
+        # examples, for reasons not otherwise modelled here), scan
+        # forward for the area's own header directly and, once found,
+        # walk its native sprite chain matching this record's own name
+        # -- every SpriteRecord that shares an area independently finds
+        # the same one this way, with no need to track sibling grouping.
+        target = name.strip()
+        if not target:
+            return b""
+        n = len(data)
+        pos = start
+        while pos + 16 <= n:
+            size, count, first_offset, size_repeat = struct.unpack_from("<4I", data, pos)
+            if (first_offset == 16 and size == size_repeat and 16 < size
+                    and 1 <= count <= MAX_COLLECTION_SIZE and pos + size <= n):
+                found = self._match_sprite_in_area(data, pos, size, count, target)
+                if found is not None:
+                    return found
+            pos += 4
+        return b""
+
+    def _match_sprite_in_area(self, data: bytes, area_start: int, area_size: int,
+                              count: int, target: str) -> bytes | None:
+        area_end = area_start + area_size
+        pos = area_start + 16
+        for _ in range(count):
+            if pos + 16 > area_end:
+                return None
+            next_offset = struct.unpack_from("<I", data, pos)[0]
+            raw_name = data[pos + 4:pos + 16]
+            nul = raw_name.find(b"\0")
+            sprite_name = (raw_name if nul < 0 else raw_name[:nul]).decode("latin-1")
+            sprite_end = area_end if next_offset == 0 else pos + next_offset
+            if sprite_end <= pos or sprite_end > area_end:
+                return None
+            if sprite_name == target:
+                return data[pos:sprite_end]
+            if next_offset == 0:
+                return None
+            pos = sprite_end
+        return None
+
     def _require_last(self, last: bool, name: str, offset: int) -> None:
         if not last:
             raise InvalidPointerError(f"records follow {name} record", offset)
@@ -305,12 +376,43 @@ class _Decoder:
             name = r.fixed_string(12)
             values = tuple([r.u32(), r.u32()] + [r.i32() for _ in range(6)] +
                            [r.u32() for _ in range(8)])
+            # The word immediately after "values" is the palette's own
+            # entry count directly -- confirmed against two real,
+            # deliberately contrasting files (AWDocs/TestDocs/
+            # Sprite16ColourPalettedMasked,d94 and
+            # Sprite256ColoursPaletedNoMask,d94): the word there reads
+            # exactly 16 and 256 respectively, each followed immediately
+            # by that many real, sensible-looking palette words (a
+            # 16-entry file starting with a clean 8-step greyscale ramp,
+            # for instance) -- not preceded by any separate flag word,
+            # disproving an earlier version of this fix that inserted
+            # one (based on a single palette-less 32bpp sprite, where it
+            # happened to coincidentally still work).
+            #
+            # A genuinely palette-less sprite (32bpp/direct-colour, with
+            # no palette at all -- confirmed independently via
+            # riscos_sprites/riscos-dumpsprites on that same sprite,
+            # extracted separately from a real document) reads an
+            # implausible value here instead of a clean 0: that kind of
+            # sprite's own record appears to carry additional fields (at
+            # least one further embedded string resembling a mask colour
+            # name, e.g. "White") this decoder doesn't yet model, which
+            # "values" above -- correct for the two indexed examples --
+            # doesn't account for, throwing off this word's own true
+            # position for that case specifically. Rather than guess at
+            # that structure without a confirmed real example to check
+            # against, an implausible count here is treated the same as
+            # a confirmed no-palette sprite (empty palette) instead of
+            # raising -- consistent with the one real case seen so far,
+            # and no worse than raising for any other.
             count = r.u32()
             if count > MAX_COLLECTION_SIZE or count > (r.limit - r.position) // 4:
-                raise TruncatedDataError("sprite palette count exceeds record", r.position - 4)
+                count = 0
+            palette = tuple(r.u32() for _ in range(count))
+            sprite_data = self._find_sprite_data(r.data, r.position, name.text)
             return m.SpriteRecord, {"unknown_24": unknown_24, "name": name,
                                     "unknown_values": values,
-                                    "palette": tuple(r.u32() for _ in range(count))}
+                                    "palette": palette, "data": sprite_data}
         if code == 0x06:
             return m.GroupRecord, {"unknown_values": (r.u32(), r.u32(), r.u32())}
         if code == 0x0A:
@@ -420,6 +522,41 @@ class _Decoder:
             cls = m.StartMarkerRecord if code == 0x3E else m.EndMarkerRecord
             return cls, {"marker_style": r.i32(), "marker_width": r.u32(),
                          "marker_height": r.u32()}
+        if code == 0x6D:
+            self._require_last(last, "jpeg", r.position)
+            # Confirmed against a real file (AWDocs/TestDocs/JPEG,d94):
+            # pixel_width/pixel_height match the embedded JPEG's own
+            # SOF0 marker exactly (192, 74), and dpi_x/dpi_y match its
+            # own JFIF APP0 density fields exactly (90, 90) -- both
+            # decoded independently from the JPEG bytes themselves, not
+            # merely assumed from field position. The 24-byte "corner"
+            # field reuses the same 3-point structure
+            # EllipseRecord/RoundedRectangleRecord call "triangle"
+            # (unconfirmed purpose there too); here the three points
+            # read as (min_x,min_y), (max_x,min_y), (max_x,max_y) --
+            # three of the picture's own four bounding-box corners. The
+            # transform matrix (a,b,c,d,e,f) that follows matches
+            # DrawFile's own embedded-JPEG object convention exactly
+            # (see riscos-impression's own formats/drawfile.py) --
+            # identity scale, e/f equal to the bounding box's own
+            # min_x/min_y, in the one file checked.
+            unknown_24 = r.u32()
+            pixel_width = r.u32()
+            pixel_height = r.u32()
+            dpi_x = r.u32()
+            dpi_y = r.u32()
+            corner = _polyline(r, 3)
+            matrix = tuple(r.i32() for _ in range(6))
+            length = r.u32()
+            if length > (r.limit - r.position):
+                raise TruncatedDataError("jpeg length exceeds available data", r.position - 4)
+            data = r.bytes(length)
+            return m.JpegRecord, {
+                "unknown_24": unknown_24,
+                "pixel_width": pixel_width, "pixel_height": pixel_height,
+                "dpi_x": dpi_x, "dpi_y": dpi_y, "corner": corner,
+                "matrix": matrix, "data": data,
+            }
         # Unknown final records have no safe end and therefore no raw body.
         return m.UnknownRecord, {}
 

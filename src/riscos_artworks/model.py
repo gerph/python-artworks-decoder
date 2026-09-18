@@ -17,7 +17,7 @@ __all__ = [
     "DecodedString", "DistortionGroupRecord", "EllipseRecord", "EmptyRecord",
     "EndCapRecord", "EndElement", "EndMarkerRecord", "FileInfoRecord",
     "FillColourRecord", "FillType", "FontNameRecord", "FontSizeRecord",
-    "GroupRecord", "JoinStyle", "JoinStyleRecord", "LayerRecord",
+    "GroupRecord", "JoinStyle", "JoinStyleRecord", "JpegRecord", "LayerRecord",
     "LineCapRecord", "LineElement", "MarkerRecord", "MarkerStyle",
     "MoveElement", "Palette", "PaletteEntry", "Path", "PathElement",
     "PathRecord", "PerspectiveGroupRecord", "Point", "Record", "RecordList",
@@ -68,6 +68,7 @@ class RecordType(IntEnum):
     START_MARKER = 0x3E
     END_MARKER = 0x3F
     DISTORTION_SUBGROUP = 0x42
+    JPEG = 0x6D
 
 
 class FillType(IntEnum):
@@ -229,20 +230,51 @@ Path = tuple[PathElement, ...]
 
 @dataclass(frozen=True, slots=True)
 class ColourIndex:
-    """A raw indexed, direct-BGR, or transparent colour reference.
+    """A raw indexed, direct-CMYK, transparent, or registration-black
+    colour reference.
 
-    A direct value's own colour channels sit at fixed bit offsets
-    confirmed against a real file and cross-checked against
-    riscos-artworks-js's own reference colour mapping: red in bits
-    0-7, green in bits 8-15, blue in bits 16-23 (`bgr`, named for the
-    tuple order it returns them in, exposes exactly these three
-    bytes). Bits 24-31 are not a colour channel; they were observed
-    non-zero on real, otherwise-ordinary direct/resolved colour values
-    (e.g. 0x20 on many CMYK-model palette entries' own already-resolved
-    `PaletteEntry.colour`) without affecting how riscos-artworks-js's
-    own reference renderer treats the colour, so a consumer resolving
-    a colour to RGB should mask to the low 24 bits rather than
-    treating the top byte as significant."""
+    A "direct" value (``0x01000000 <= value < 0xFFFFFFFE``) packs a
+    self-contained CMYK colour needing no palette lookup -- ArtWorks
+    writes one of these instead of a palette index when a colour has no
+    palette entry of its own (e.g. a DrawFile-to-ArtWorks drag-
+    conversion, or a computed/blended intermediate colour). Confirmed
+    against two real, independent examples, both checked against the
+    real document's own colour-picker dialog: ``0xFFFF9C00`` (target
+    59.8/99.6/99.2/0% CMYK; this decoding gives 61.2/100/100/0%) and
+    ``0xFFFF9900`` (target RGB 40.2/0.4/0.8%, i.e. (102,1,2); this
+    decoding gives exactly (102,0,0)). The four bytes, LSB to MSB, are
+    K, C, M, Y (each 0-255, *not* the 31-bit scale a palette entry's
+    own component words use) -- see `bgr`'s own docstring for the
+    conversion. This byte order also happens to explain why
+    ``value >= 0x01000000`` (a non-zero top/Y byte) is the right "is
+    this direct, not indexed" test: a document realistically never has
+    anywhere near 16 million palette entries, so any indexed reference
+    naturally keeps its own top byte zero, while a direct colour with
+    literally no yellow ink (Y=0) is the one case this test can't
+    distinguish from an index -- not yet seen in a real file, and not
+    otherwise resolvable without a second signal this format doesn't
+    seem to carry.
+
+    Two reserved sentinel values sit just below the indexed-value range
+    (below 0x01000000), both confirmed against the kernel's own
+    constants in !TopCode/Binds/TopBinds.bas:
+
+    * ``0xFFFFFFFF`` (``Colour_None = -1``) -- no colour/transparent.
+    * ``0xFFFFFFFE`` (``Colour_RegBlack = -2``) -- "Registration Black":
+      a print-production sentinel meaning "solid ink on every
+      separation plate", not a literal direct colour -- despite
+      satisfying the same ``value >= 0x01000000`` test a genuine direct
+      BGR colour does. Confirmed against Paths/PathFill.bas's own
+      "'None' and RegistrationBlack are absolutely disallowed [as a
+      graduated-fill colour]" comment, and against a real file
+      (TestDocs/RegistrationBlackRect,d94) with a StrokeColourRecord
+      set to this exact value, named to describe its own intended
+      on-screen appearance -- solid black, not the near-white a naive
+      BGR-bit extraction of 0xFFFFFFFE would otherwise produce (byte
+      0xFE in the low, "red", byte -- one off pure white). Resolve it
+      to solid black for any RGB preview purpose (see
+      ArtWorks.resolve_colour), the same way real ArtWorks itself
+      would show it on screen."""
 
     value: int
 
@@ -252,11 +284,15 @@ class ColourIndex:
 
     @property
     def is_direct(self) -> bool:
-        return 0x01000000 <= self.value < 0xFFFFFFFF
+        return 0x01000000 <= self.value < 0xFFFFFFFE
 
     @property
     def is_transparent(self) -> bool:
         return self.value == 0xFFFFFFFF
+
+    @property
+    def is_registration_black(self) -> bool:
+        return self.value == 0xFFFFFFFE
 
     @property
     def palette_index(self) -> int | None:
@@ -264,10 +300,44 @@ class ColourIndex:
 
     @property
     def bgr(self) -> tuple[int, int, int] | None:
+        """This direct colour's own (r, g, b) bytes (0-255 each), or
+        None if this isn't a direct colour at all. See the class
+        docstring for the K/C/M/Y byte layout and how it was confirmed;
+        despite the property's own name (kept for a stable, minimal-
+        churn public API -- every caller already treats its result as
+        (r, g, b), never literally as "blue, green, red"), this is a
+        standard subtractive CMYK-to-RGB conversion, not a raw BGR
+        unpack."""
+        if self.is_registration_black:
+            return (0, 0, 0)
         if not self.is_direct:
             return None
-        return ((self.value >> 16) & 0xFF, (self.value >> 8) & 0xFF,
-                self.value & 0xFF)
+        k = self.value & 0xFF
+        c = (self.value >> 8) & 0xFF
+        m = (self.value >> 16) & 0xFF
+        y = (self.value >> 24) & 0xFF
+        ink = 1.0 - k / 255.0
+        r = round(255 * (1.0 - c / 255.0) * ink)
+        g = round(255 * (1.0 - m / 255.0) * ink)
+        b = round(255 * (1.0 - y / 255.0) * ink)
+        return (r, g, b)
+
+    @property
+    def preview_word(self) -> int | None:
+        """This colour's own (r, g, b) packed the same way a resolved
+        PaletteEntry.colour/Palette.resolve() word already is (bits 0-7
+        red, 8-15 green, 16-23 blue, top byte an ignorable tag) -- for
+        registration black or a direct colour only; None for a
+        transparent or (unresolvable without a Palette) indexed
+        reference. Lets ArtWorks.resolve_colour()/Palette.resolve()
+        return every non-indexed case in the one convention every real
+        caller (riscos-impression's own colour_to_css/_artworks_pdf_rgb)
+        already expects."""
+        rgb = self.bgr
+        if rgb is None:
+            return None
+        r, g, b = rgb
+        return 0x20000000 | (b << 16) | (g << 8) | r
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +368,11 @@ class PaletteEntry:
 
 @dataclass(frozen=True, slots=True)
 class Palette:
-    """An indexed palette retaining both complete header words."""
+    """An indexed palette retaining both complete header words. Despite
+    its name, count_word is not the palette's own real entry count --
+    see the decoder's own _palette() for why -- and is kept here
+    verbatim only for callers that want the raw on-disk word; use
+    `count` (or `len(entries)`, always identical) for the real count."""
 
     count_word: int
     control_word: int
@@ -307,7 +381,7 @@ class Palette:
 
     @property
     def count(self) -> int:
-        return self.count_word & 0xFFFFFF
+        return len(self.entries)
 
     @property
     def masked_control(self) -> int:
@@ -317,8 +391,10 @@ class Palette:
         value = colour.value if isinstance(colour, ColourIndex) else colour
         if value == 0xFFFFFFFF:
             return None
+        if value == 0xFFFFFFFE:
+            return 0x00000000  # "Registration Black" -- see ColourIndex's own docstring
         if value >= 0x01000000:
-            return value
+            return ColourIndex(value).preview_word
         return self.entries[value].colour if value < len(self.entries) else None
 
 
@@ -449,10 +525,42 @@ class PathRecord(Record):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SpriteRecord(Record):
+    """An embedded sprite's own ArtWorks metadata (name and indexed
+    palette). ArtWorks stores the actual pixel data for one or more
+    sibling SpriteRecords together, once, in a single shared RISC
+    OS-format sprite area placed after all of their own metadata blocks
+    -- `data` is resolved by matching this record's own name against
+    that shared area during decoding (b"" if no match was found), and is
+    already a single native sprite record with any area wrapper
+    stripped, matching the convention DrawFile.DrawSprite.data uses in
+    riscos-impression."""
+
     unknown_24: int
     name: DecodedString
     unknown_values: tuple[int, ...]
     palette: tuple[int, ...]
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JpegRecord(Record):
+    """An embedded JPEG image, complete standalone JPEG bytes with no
+    area wrapper of its own (unlike SpriteRecord, whose own pixel data
+    lives in a separate shared area -- data here is simply the JPEG
+    file itself, ready to embed as-is). Must be the last record in its
+    own list. Confirmed against a real file (AWDocs/TestDocs/
+    JPEG,d94): pixel_width/pixel_height and dpi_x/dpi_y both match
+    values independently decoded straight from the embedded JPEG's own
+    SOF0 and JFIF APP0 markers."""
+
+    unknown_24: int
+    pixel_width: int
+    pixel_height: int
+    dpi_x: int
+    dpi_y: int
+    corner: tuple[Point, Point, Point]
+    matrix: tuple[int, int, int, int, int, int]
+    data: bytes
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -735,12 +843,28 @@ class ArtWorks:
         return tuple(record for record in self.walk(UnknownRecord))
 
     def resolve_colour(self, colour: ColourIndex | int) -> int | None:
-        """Resolve a colour reference to a BGR word or transparent ``None``."""
+        """Resolve a colour reference to a preview colour word (bits
+        0-7 red, 8-15 green, 16-23 blue, top byte an ignorable tag --
+        the same convention a resolved PaletteEntry.colour word already
+        uses) or transparent ``None``. A direct colour is decoded from
+        its own packed CMYK bytes via ColourIndex.preview_word -- see
+        that property's own docstring for the conversion and how it was
+        confirmed.
+
+        ``0xFFFFFFFE`` ("Registration Black", ``Colour_RegBlack`` --
+        see ColourIndex's own docstring) resolves to solid black
+        (``0x00000000``), not the raw sentinel value itself -- that
+        value satisfies ``value >= 0x01000000`` the same way a genuine
+        direct colour does, but isn't one; returning it unresolved
+        would produce near-white (byte 0xFE in the low, "red", byte)
+        instead of the solid black it's meant to represent on screen."""
         value = colour.value if isinstance(colour, ColourIndex) else colour
         if value == 0xFFFFFFFF:
             return None
+        if value == 0xFFFFFFFE:
+            return 0x00000000
         if value >= 0x01000000:
-            return value
+            return ColourIndex(value).preview_word
         return None if self.palette is None else self.palette.resolve(value)
 
     def palette_entry(self, index: int) -> PaletteEntry | None:
