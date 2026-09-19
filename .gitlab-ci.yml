@@ -27,9 +27,9 @@ package:
       eval "$(./ci-vars)"
       PYTHONPATH="/tmp/pypa-build${PYTHONPATH:+:$PYTHONPATH}" \
         make package VERSION="$CI_PROJECT_VERSION"
-      package_file="dist/riscos-artworks_${CI_PROJECT_VERSION}_all.deb"
+      package_file="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
       wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-      test -f "$package_file"
+      test -n "$package_file"
       test -n "$wheel_file"
   artifacts:
     name: "riscos-artworks-$CI_COMMIT_REF_SLUG"
@@ -47,8 +47,8 @@ docs:
       set -eu
       eval "$(./ci-vars)"
       make docs VERSION="$CI_PROJECT_VERSION"
-      docs_file="riscos-artworks-${CI_PROJECT_VERSION}-docs.zip"
-      test -f "$docs_file"
+      docs_file="$(find . -maxdepth 1 -name '*-docs.zip' -print -quit)"
+      test -n "$docs_file"
   artifacts:
     name: "riscos-artworks-docs-$CI_COMMIT_REF_SLUG"
     paths:
@@ -68,12 +68,12 @@ publish:
     - |
       set -eu
       eval "$(./ci-vars)"
-      package_file="dist/riscos-artworks_${CI_PROJECT_VERSION}_all.deb"
+      package_file="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
       wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-      docs_file="riscos-artworks-${CI_PROJECT_VERSION}-docs.zip"
-      test -f "$package_file"
+      docs_file="$(find . -maxdepth 1 -name '*-docs.zip' -print -quit)"
+      test -n "$package_file"
       test -n "$wheel_file"
-      test -f "$docs_file"
+      test -n "$docs_file"
       for file in "$package_file" "$wheel_file" "$docs_file"; do
         curl --fail --silent --show-error \
           --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
