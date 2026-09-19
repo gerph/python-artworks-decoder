@@ -21,6 +21,8 @@ build:
 	cp -a src/riscos_artworks "$(BUILD_SOURCE)/src/riscos_artworks"
 	find "$(BUILD_SOURCE)" -name __pycache__ -type d -prune -exec rm -rf {} +
 	sed 's/^version = ".*"/version = "$(WHEEL_VERSION)"/' pyproject.toml > "$(BUILD_SOURCE)/pyproject.toml"
+	# The in-tree __version__ is "dev"; the built copy carries the real one.
+	sed -i 's/^__version__ = ".*"/__version__ = "$(WHEEL_VERSION)"/' "$(BUILD_SOURCE)/src/riscos_artworks/__init__.py"
 	python3 -m build --outdir "$(CURDIR)/dist" "$(BUILD_SOURCE)"
 
 package:
