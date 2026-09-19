@@ -177,7 +177,11 @@ jobs:
           name: documentation
           path: dist
 
-      - name: Create or update the GitHub release
+      # The release is created as a draft with no notes: release notes are
+      # written by hand (they are not a changelog or a list of merged pull
+      # requests), and the release is published from the GitHub UI once
+      # they are in place. The built files are attached automatically.
+      - name: Create or update the draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -189,6 +193,7 @@ jobs:
           else
             gh release create "$TAG_NAME" dist/* \
               --verify-tag \
-              --generate-notes \
+              --draft \
+              --notes "" \
               --title "$TAG_NAME"
           fi
